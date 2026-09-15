@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/MithrilBytes/leeward/main/schemas/outcome.schema.json",
+  "title": "leeward Outcome",
+  "description": "Attached to every call. In MCP mode it is structuredContent.leeward; in HTTP mode it is the DOWN response body and is summarized into X-Leeward-* headers; in LLM mode its note becomes the error message. The note is leeward's own text, never origin content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcome",
+    "endpoint",
+    "volatility",
+    "note",
+    "advice"
+  ],
+  "properties": {
+    "outcome": {
+      "enum": [
+        "FRESH",
+        "STALE",
+        "DOWN"
+      ],
+      "description": "FRESH: served by the origin, or from a stored response still within its freshness lifetime. STALE: served from cache past its freshness lifetime, body byte-identical to an earlier origin response. DOWN: not served."
+    },
+    "endpoint": {
+      "type": "string",
+      "description": "Resolved endpoint identity: scheme+host+path-template for HTTP, 'server/tool' for MCP, 'tier:name' for model calls."
+    },
+    "volatility": {
+      "enum": [
+        "static",
+        "slow",
+        "volatile",
+        "live",
+        "never"
+      ],
+      "description": "Class in force for this endpoint. 'live' is never served stale."
+    },
+    "rule_index": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Index of the configuration rule that decided the policy, or null if decided by origin headers or defaults. Matches what `leeward classify` prints."
+    },
+    "note": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "The text the model reads. Prefixed '[leeward]'. Rendered from a versioned template. Contains no origin content."
+    },
+    "advice": {
+      "enum": [
+        "PROCEED",
+        "PROCEED_WITH_CAUTION",
+        "RETRY_AFTER",
+        "DO_NOT_RETRY",
+        "TREAT_AS_UNKNOWN"
+      ],
+      "description": "Machine-readable summary of the note's recommendation. TREAT_AS_UNKNOWN is the live-endpoint-unavailable case: the value must not be guessed."
+    },
+    "age_s": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Age of the served body in seconds. Present and required when outcome is STALE."
+    },
+    "stored_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "content_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "failure": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when outcome is DOWN.",
+      "additionalProperties": false,
+      "required": [
+        "class",
+        "disposition",
+        "attempts"
+      ],
+      "properties": {
+        "class": {
+          "enum": [
+            "DNS_NXDOMAIN",
+            "DNS_FAILURE",
+            "CONNECT_REFUSED",
+            "CONNECT_TIMEOUT",
+            "TLS_CLOCK_SKEW",
+            "TLS_OTHER",
+            "READ_TIMEOUT",
+            "WEDGED",
+            "AUTH_FAILURE",
+            "NOT_FOUND",
+            "INVALID_REQUEST",
+            "RATE_LIMITED",
+            "QUOTA_EXHAUSTED",
+            "SERVER_ERROR",
+            "TOOL_GONE",
+            "PROTOCOL_ERROR",
+            "CONTENT_TOO_LARGE",
+            "BREAKER_OPEN",
+            "BUDGET_EXHAUSTED"
+          ]
+        },
+        "disposition": {
+          "enum": [
+            "TRANSIENT",
+            "WAIT",
+            "NEVER",
+            "UNKNOWN"
+          ],
+          "description": "Whether retrying can succeed. Derived per call from class plus response detail plus remaining run time, not fixed per class."
+        },
+        "disposition_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why this disposition, e.g. 'Retry-After 3600s exceeds remaining run budget 118s'. Shown by `leeward events`."
+        },
+        "retry_after_s": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Required when disposition is WAIT."
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "origin_status": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "underlying_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For BREAKER_OPEN and BUDGET_EXHAUSTED, the class of the failure behind the refusal."
+        },
+        "injected": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when produced by `leeward chaos`."
+        },
+        "scope": {
+          "enum": [
+            "host",
+            "endpoint",
+            "run",
+            "request",
+            null
+          ],
+          "description": "Who the failure is about: the host, the endpoint, the calling run's credentials, or this one request. Decides where leeward remembers it."
+        }
+      }
+    },
+    "withheld_cache": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when a cached copy exists but was deliberately not served. The live-endpoint case: the agent must know the copy exists and why it is not being given one.",
+      "additionalProperties": false,
+      "required": [
+        "age_s",
+        "reason"
+      ],
+      "properties": {
+        "age_s": {
+          "type": "integer"
+        },
+        "reason": {
+          "enum": [
+            "VOLATILITY_LIVE",
+            "VOLATILITY_NEVER",
+            "BEYOND_STALE_ALLOWANCE",
+            "VARY_MISMATCH"
+          ],
+          "description": "VOLATILITY_LIVE: only a current value is meaningful. BEYOND_STALE_ALLOWANCE: older than the class permits."
+        },
+        "available_via": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "How the caller could request it anyway, when policy permits (never for VOLATILITY_LIVE or VOLATILITY_NEVER). E.g. 'X-Leeward-Accept-Stale: 1'."
+        }
+      }
+    },
+    "budget": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "retry_attempts_remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retry_seconds_remaining": {
+          "type": "number",
+          "minimum": 0
+        },
+        "endpoint_attempts_remaining": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "breaker": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "CLOSED",
+            "OPEN",
+            "HALF_OPEN"
+          ]
+        },
+        "opened_by_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next_probe_in_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "template_set_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hash of the note templates that rendered the note, so wording changes are traceable."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "STALE"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "age_s",
+          "stored_at",
+          "content_sha256"
+        ],
+        "properties": {
+          "age_s": {
+            "type": "integer"
+          },
+          "volatility": {
+            "enum": [
+              "static",
+              "slow",
+              "volatile"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "DOWN"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "failure"
+        ],
+        "properties": {
+          "failure": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "advice": {
+            "const": "RETRY_AFTER"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "failure": {
+            "required": [
+              "retry_after_s"
+            ],
+            "properties": {
+              "retry_after_s": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

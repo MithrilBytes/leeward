@@ -1,0 +1,2 @@
+{# STALE. Vars: age_human, because_clause, volatility, accuracy_clause, retry_clause #}
+[leeward] STALE: served a copy stored {{age_human}} ago {{because_clause}}. This endpoint is classified `{{volatility}}`, so {{accuracy_clause}}. {{retry_clause}}

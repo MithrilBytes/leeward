@@ -1,0 +1,2 @@
+{# DOWN on a live endpoint whose cached copy is withheld. Vars: host_or_tool, failure_class, elapsed_human, attempts, attempts_plural, withheld_age_human #}
+[leeward] DOWN: {{host_or_tool}} returned nothing ({{failure_class}} after {{elapsed_human}}, {{attempts}} attempt{{attempts_plural}}). This endpoint is classified `live`: a cached value from {{withheld_age_human}} ago exists but is not being served, because only the current value is meaningful here. Treat this value as unknown and say so rather than estimating it.

@@ -1,0 +1,2 @@
+{# DOWN, TOOL_GONE. Vars: tool_name, server_name #}
+[leeward] DOWN: the tool `{{tool_name}}` is gone from its MCP server ({{server_name}}). This is permanent for this run; further attempts will not succeed. Other tools on this server are unaffected.

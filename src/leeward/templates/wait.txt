@@ -1,0 +1,2 @@
+{# DOWN, disposition WAIT. Vars: host_or_tool, failure_class, retry_after_human, budget_clause #}
+[leeward] DOWN: {{host_or_tool}} is rate limited ({{failure_class}}). It can be retried in {{retry_after_human}}{{budget_clause}}. Do other work first and come back to it, or proceed without it.
