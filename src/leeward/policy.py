@@ -138,6 +138,8 @@ class ResolvedPolicy:
     vary_on: tuple[str, ...]
     max_body_bytes: int
     class_mappings: tuple[ClassMapping, ...]
+    max_attempts_explicit: bool = False
+    """True when a rule set max_attempts, which then outranks a class's own cap."""
 
     @property
     def endpoint(self) -> str:
@@ -313,6 +315,7 @@ def resolve(
         max_attempts=rule.max_attempts
         if rule is not None and rule.max_attempts
         else defaults.max_attempts,
+        max_attempts_explicit=rule is not None and rule.max_attempts is not None,
         idempotent=idempotent,
         cacheable=cacheable,
         cacheable_reason=cacheable_reason,
