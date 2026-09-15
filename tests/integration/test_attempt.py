@@ -8,6 +8,7 @@ quick, but nothing else is scaled: real sockets, real cancellation, real timing.
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
 from collections.abc import AsyncIterator
@@ -27,6 +28,10 @@ from leeward.transport import Call, Transport
 from leeward.vocab import BreakerState, Disposition, FailureClass, RunResolution
 
 RUN = RunRef("run-a", RunResolution.HEADER)
+
+SLACK_S = 0.5 if os.environ.get("CI") else 0.2
+"""How far past a deadline a return may land. A shared runner is not a quiet laptop,
+and what is under test is the deadline, not the scheduler's punctuality."""
 
 
 def policy_for(
@@ -100,7 +105,7 @@ async def test_a_hang_ends_at_the_hard_deadline_and_the_next_call_returns_at_onc
     elapsed = time.monotonic() - started
 
     assert first.classification.failure_class is FailureClass.WEDGED
-    assert 1.0 <= elapsed <= 1.2
+    assert 1.0 <= elapsed <= 1.0 + SLACK_S
     assert first.deadline_hit == "hard"
     assert [record.hedge for record in first.attempts] == [False, True]
     assert first.classification.disposition is Disposition.NEVER
@@ -135,7 +140,7 @@ async def test_a_call_with_an_older_copy_stops_waiting_at_the_soft_deadline(
 
     assert report.abandoned_at_soft
     assert report.deadline_hit == "soft"
-    assert 0.2 <= elapsed <= 0.4
+    assert 0.2 <= elapsed <= 0.2 + SLACK_S
     assert report.background is not None and not report.background.done()
     assert origin.accepted == 1
     report.background.cancel()

@@ -1,0 +1,76 @@
+# make check on Linux and macOS, at both ends of the supported Python range.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Nothing here writes to the repository, so the token can only read it.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions
+permissions:
+  contents: read
+
+# A newer push to a pull request makes its older run moot. Runs on main finish, so
+# every commit there keeps a result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: check (${{ matrix.os }}, python ${{ matrix.python }})
+    strategy:
+      # A failure on one platform says nothing about the other, so both run to the end.
+      fail-fast: false
+      matrix:
+        # macos-26 is the arm64 image.
+        # https://github.com/actions/runner-images#available-images
+        os: [ubuntu-24.04, macos-26]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    # The default is 360 minutes, which a hung test would spend in full.
+    timeout-minutes: 20
+    env:
+      CI: "true"
+    steps:
+      # Actions are pinned to full commit SHAs, since a tag can be moved to other code.
+      # https://docs.github.com/en/actions/reference/security/secure-use#using-third-party-actions
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No step pushes, so the token is not left in the git config for later steps.
+          persist-credentials: false
+
+      - id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          # Caches pip's download directory, keyed on the files that decide what it holds.
+          cache: pip
+          cache-dependency-path: |
+            constraints.txt
+            pyproject.toml
+
+      - name: install
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
+        run: make install PYTHON="$PYTHON"
+
+      # The pins are resolved once, on one interpreter and one platform; checking them
+      # everywhere would only report that resolution differs, which is expected.
+      - name: lock
+        if: matrix.os == 'ubuntu-24.04' && matrix.python == '3.13'
+        run: make lock-check
+
+      - name: lint
+        run: make lint
+
+      - name: typecheck
+        run: make typecheck
+
+      - name: test
+        run: time make test
