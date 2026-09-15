@@ -1,0 +1,2 @@
+{# LLM mode system prefix, off by default, rendered only when something is degraded. Vars: summary #}
+[leeward] Degraded: {{summary}}. Values from unreachable sources are unknown, not zero.

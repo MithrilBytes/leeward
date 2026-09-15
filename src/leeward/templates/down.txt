@@ -1,0 +1,2 @@
+{# DOWN, nothing usable to serve. Vars: host_or_tool, failure_class, elapsed_human, attempts, attempts_plural, retry_clause, alternatives_clause #}
+[leeward] DOWN: {{host_or_tool}} returned nothing ({{failure_class}} after {{elapsed_human}}, {{attempts}} attempt{{attempts_plural}}). {{retry_clause}}{{alternatives_clause}}

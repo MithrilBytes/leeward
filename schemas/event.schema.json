@@ -1,0 +1,472 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/MithrilBytes/leeward/main/schemas/event.schema.json",
+  "title": "leeward Event",
+  "description": "One JSONL line per call, plus lifecycle events (breaker changes, warm operations, tools/list refreshes). `leeward report` is computed entirely from these. Bodies are never included unless recording is switched on, and credential headers are stripped unconditionally.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ts",
+    "event",
+    "run"
+  ],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "event": {
+      "enum": [
+        "call",
+        "attempt",
+        "breaker",
+        "budget",
+        "warm",
+        "tools_refresh",
+        "chaos",
+        "startup",
+        "warning"
+      ]
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "resolved_by"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "resolved_by": {
+          "enum": [
+            "header",
+            "mcp_meta",
+            "mcp_session",
+            "llm_conversation_hash",
+            "connection",
+            "cli",
+            "internal"
+          ],
+          "description": "How run identity was determined. 'connection' is the weakest and is worth knowing when reading a report; 'cli' and 'internal' mark leeward's own work."
+        }
+      }
+    },
+    "surface": {
+      "enum": [
+        "mcp",
+        "fetch",
+        "forward",
+        "llm",
+        "cli"
+      ]
+    },
+    "endpoint": {
+      "type": "string"
+    },
+    "method": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "volatility": {
+      "enum": [
+        "static",
+        "slow",
+        "volatile",
+        "live",
+        "never",
+        null
+      ]
+    },
+    "rule_index": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "FRESH",
+        "STALE",
+        "DOWN",
+        null
+      ]
+    },
+    "advice": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "failure_class": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "underlying_class": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "For BREAKER_OPEN and BUDGET_EXHAUSTED, the class of the failure behind the refusal."
+    },
+    "failure_scope": {
+      "enum": [
+        "host",
+        "endpoint",
+        "run",
+        "request",
+        null
+      ],
+      "description": "Who the failure is about: the host, the endpoint, the calling run's credentials, or this one request. Decides where leeward remembers it."
+    },
+    "disposition": {
+      "enum": [
+        "TRANSIENT",
+        "WAIT",
+        "NEVER",
+        "UNKNOWN",
+        null
+      ]
+    },
+    "disposition_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "injected": {
+      "type": "boolean",
+      "default": false
+    },
+    "hedge": {
+      "type": "boolean",
+      "default": false,
+      "description": "On attempt events: a second attempt started at the soft deadline on a fresh connection."
+    },
+    "attempts": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "attempt_latencies_ms": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "integer"
+      }
+    },
+    "total_latency_ms": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "deadline": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "soft_s": {
+          "type": "number"
+        },
+        "hard_s": {
+          "type": "number"
+        },
+        "hit": {
+          "enum": [
+            "none",
+            "soft",
+            "hard"
+          ]
+        }
+      }
+    },
+    "cache": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "hit": {
+          "type": "boolean"
+        },
+        "age_s": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "revalidated": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "single_flight_joined": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "withheld": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "withheld_cache.reason when a copy existed but was not served."
+        },
+        "bytes_served": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pinned": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "budget_after": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "retry_attempts_remaining": {
+          "type": "integer"
+        },
+        "retry_seconds_remaining": {
+          "type": "number"
+        },
+        "endpoint_attempts_remaining": {
+          "type": "integer"
+        }
+      }
+    },
+    "breaker": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "enum": [
+            "endpoint",
+            "host"
+          ]
+        },
+        "from_state": {
+          "enum": [
+            "CLOSED",
+            "OPEN",
+            "HALF_OPEN",
+            null
+          ]
+        },
+        "to_state": {
+          "enum": [
+            "CLOSED",
+            "OPEN",
+            "HALF_OPEN"
+          ]
+        },
+        "opened_by_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "tokens": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "LLM surface only.",
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": "integer"
+        },
+        "completion": {
+          "type": "integer"
+        },
+        "spent_on_retries": {
+          "type": "integer"
+        }
+      }
+    },
+    "warm": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "corpus": {
+          "type": "string"
+        },
+        "trigger": {
+          "enum": [
+            "cli",
+            "schedule",
+            "degradation",
+            "link_prefetch"
+          ]
+        },
+        "fetched": {
+          "type": "integer"
+        },
+        "already_fresh": {
+          "type": "integer"
+        },
+        "failed": {
+          "type": "integer"
+        },
+        "bytes": {
+          "type": "integer"
+        },
+        "robots_skipped": {
+          "type": "boolean"
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      }
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "For 'warning' and 'startup' events, e.g. cache_unavailable_in_tunnel."
+    },
+    "debug": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "description": "Only with --record-bodies. Credential headers are stripped even here.",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "request_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "response_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "request_body": {
+          "type": "string"
+        },
+        "response_body": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "template_set_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "leeward_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "call"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "surface",
+          "endpoint",
+          "outcome",
+          "volatility",
+          "attempts",
+          "total_latency_ms"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "STALE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "volatility": {
+            "enum": [
+              "static",
+              "slow",
+              "volatile"
+            ]
+          },
+          "cache": {
+            "required": [
+              "hit",
+              "age_s"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event": {
+            "const": "breaker"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "breaker",
+          "endpoint"
+        ]
+      }
+    }
+  ]
+}

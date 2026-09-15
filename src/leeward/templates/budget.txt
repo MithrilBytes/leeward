@@ -1,0 +1,2 @@
+{# DOWN, BUDGET_EXHAUSTED. Vars: host_or_tool, spent_attempts, scope_clause #}
+[leeward] DOWN: this run has spent its retry allowance on {{host_or_tool}} ({{spent_attempts}} attempts). Further attempts will be refused{{scope_clause}}. Continue the task without this source and state what you could not obtain.
