@@ -63,6 +63,9 @@ ignore = ["ANN401", "TRY003", "TRY004"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN"]
+# transport.py implements the connection pool's network interface, whose methods take
+# a timeout argument, so ASYNC109 would have it rename what it does not define.
+"src/leeward/transport.py" = ["ASYNC109"]
 
 [tool.pyright]
 include = ["src", "tests", "fakes", "scripts"]
