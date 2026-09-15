@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/MithrilBytes/leeward/main/schemas/policy.schema.json",
+  "title": "leeward Policy (rules section of leeward.yaml)",
+  "description": "Ordered, first-match-wins rules resolving an endpoint to a volatility class, deadlines, stale allowance, and cacheability. `leeward classify` reports which index matched.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rules"
+  ],
+  "properties": {
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    },
+    "defaults": {
+      "$ref": "#/$defs/settings"
+    }
+  },
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "pattern": "^[0-9]+(ms|s|m|h|d)$",
+      "description": "e.g. '30s', '6h', '30d'. Zero is written '0s'."
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "match"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Optional label, printed by `leeward classify`."
+        },
+        "match": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "Glob over the full URL, e.g. '*/wiki/*'."
+            },
+            "host": {
+              "type": "string",
+              "description": "Glob over host only."
+            },
+            "tool": {
+              "type": "string",
+              "description": "Glob over 'server/tool', e.g. 'notes/*'."
+            },
+            "method": {
+              "type": "string",
+              "enum": [
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "*"
+              ]
+            },
+            "tier": {
+              "type": "string",
+              "description": "Model tier name, LLM surface."
+            }
+          }
+        },
+        "class": {
+          "enum": [
+            "static",
+            "slow",
+            "volatile",
+            "live",
+            "never"
+          ],
+          "description": "Volatility class. 'live' is never served stale; 'never' is not cached at all."
+        },
+        "stale_on_error": {
+          "$ref": "#/$defs/duration",
+          "description": "How far past freshness a copy may be served when the origin fails. MUST be '0s' for class 'live'."
+        },
+        "stale_while_revalidate": {
+          "$ref": "#/$defs/duration"
+        },
+        "soft_deadline": {
+          "$ref": "#/$defs/duration"
+        },
+        "hard_deadline": {
+          "$ref": "#/$defs/duration"
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "pure": {
+          "type": "boolean",
+          "default": false,
+          "description": "POST/tool calls are cacheable only when true."
+        },
+        "idempotent": {
+          "type": "boolean",
+          "description": "Retryable after bytes sent. Defaults true for GET/HEAD, false otherwise."
+        },
+        "vary_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Header names included in the cache key. Authenticated endpoints must set this or be non-cacheable."
+        },
+        "max_body_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "classes": {
+          "type": "array",
+          "description": "Custom class/disposition mappings for this endpoint's upstream.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "as_class"
+            ],
+            "properties": {
+              "when_status": {
+                "type": "integer"
+              },
+              "when_body_matches": {
+                "type": "string",
+                "description": "Regex."
+              },
+              "when_error_code": {
+                "type": "string"
+              },
+              "as_class": {
+                "enum": [
+                  "DNS_NXDOMAIN",
+                  "DNS_FAILURE",
+                  "CONNECT_REFUSED",
+                  "CONNECT_TIMEOUT",
+                  "TLS_CLOCK_SKEW",
+                  "TLS_OTHER",
+                  "READ_TIMEOUT",
+                  "WEDGED",
+                  "AUTH_FAILURE",
+                  "NOT_FOUND",
+                  "INVALID_REQUEST",
+                  "RATE_LIMITED",
+                  "QUOTA_EXHAUSTED",
+                  "SERVER_ERROR",
+                  "TOOL_GONE",
+                  "PROTOCOL_ERROR",
+                  "CONTENT_TOO_LARGE"
+                ],
+                "description": "A built-in class; the ones leeward produces itself cannot be mapped."
+              },
+              "as_disposition": {
+                "enum": [
+                  "TRANSIENT",
+                  "WAIT",
+                  "NEVER",
+                  "UNKNOWN"
+                ]
+              },
+              "retry_after": {
+                "$ref": "#/$defs/duration"
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "class": {
+                "const": "live"
+              }
+            },
+            "required": [
+              "class"
+            ]
+          },
+          "then": {
+            "properties": {
+              "stale_on_error": {
+                "const": "0s"
+              },
+              "stale_while_revalidate": {
+                "const": "0s"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "class": {
+                "const": "never"
+              }
+            },
+            "required": [
+              "class"
+            ]
+          },
+          "then": {
+            "properties": {
+              "pure": {
+                "const": false
+              },
+              "stale_on_error": {
+                "const": "0s"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "enum": [
+            "static",
+            "slow",
+            "volatile",
+            "live",
+            "never"
+          ],
+          "default": "volatile"
+        },
+        "soft_deadline": {
+          "$ref": "#/$defs/duration",
+          "default": "5s"
+        },
+        "hard_deadline": {
+          "$ref": "#/$defs/duration",
+          "default": "30s"
+        },
+        "max_attempts": {
+          "type": "integer",
+          "default": 2
+        },
+        "max_body_bytes": {
+          "type": "integer",
+          "default": 10485760
+        },
+        "run_budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_retry_attempts_total": {
+              "type": "integer",
+              "default": 20
+            },
+            "max_retry_seconds_total": {
+              "type": "number",
+              "default": 120
+            },
+            "max_endpoint_attempts": {
+              "type": "integer",
+              "default": 4
+            }
+          }
+        },
+        "breaker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "open_after_transient_failures": {
+              "type": "integer",
+              "default": 3
+            },
+            "half_open_backoff_initial": {
+              "$ref": "#/$defs/duration",
+              "default": "5s"
+            },
+            "half_open_backoff_max": {
+              "$ref": "#/$defs/duration",
+              "default": "120s"
+            },
+            "close_after_successes": {
+              "type": "integer",
+              "default": 2
+            }
+          }
+        },
+        "write_tool_pattern": {
+          "type": "string",
+          "description": "Regex over MCP tool names; a match makes the tool class never unless a rule decides otherwise."
+        }
+      }
+    }
+  }
+}

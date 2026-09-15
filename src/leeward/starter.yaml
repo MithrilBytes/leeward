@@ -1,0 +1,42 @@
+# leeward configuration. `leeward classify <url|server/tool>` shows which rule below
+# decides the policy for a call, and `leeward.example.yaml` in the repository shows
+# every section.
+
+profile: dev
+data_dir: ./.leeward
+
+surfaces:
+  fetch:
+    enabled: true
+    listen: 127.0.0.1:8787
+    # name: https://origin, then point a tool at http://127.0.0.1:8787/<name>/...
+    mounts: {}
+    generic_fetch:
+      enabled: false
+      allow_hosts: []
+  mcp:
+    enabled: false
+    listen: 127.0.0.1:8787
+    servers: {}
+  llm:
+    enabled: false
+    listen: 127.0.0.1:8787
+    tiers: []
+  forward:
+    enabled: false
+    listen: 127.0.0.1:8788
+
+defaults:
+  class: volatile
+  soft_deadline: 5s
+  hard_deadline: 30s
+
+# First match wins.
+rules:
+  - name: wikipedia-articles
+    match: {url: "*/wiki/*"}
+    class: static
+    stale_on_error: 30d
+
+chaos:
+  enabled: false

@@ -1,0 +1,21 @@
+{# Sentence parts spliced into the notes above. One per line as key: text. #}
+because.unreachable: because {{host_or_tool}} is unreachable ({{failure_class}})
+because.failed: because {{host_or_tool}} is failing ({{failure_class}})
+because.slow: while {{host_or_tool}} is slow to answer (nothing within {{soft_human}})
+because.revalidating: while a fresh copy is fetched in the background
+accuracy.static: the copy is very likely still accurate
+accuracy.slow: the copy is probably still accurate
+accuracy.volatile: the copy may be out of date, so check anything time-sensitive
+retry.connectivity: Retrying will not help until connectivity returns.
+retry.shortly: Calling again shortly may return a fresh copy.
+retry.never: Retrying will not help.
+retry.never_run: Retrying will not help for the rest of this run.
+retry.after: It may succeed if called again in {{retry_after_human}}.
+retry.exhausted: leeward already retried, so calling again now is unlikely to help.
+retry.clock: This machine's clock looks wrong, so retrying will not help until it is corrected.
+alternative.too_old: A copy from {{withheld_age_human}} ago exists but is older than this endpoint allows.
+alternative.header: Call again with X-Leeward-Accept-Stale: 1 to receive it anyway.
+alternative.argument: Call again with accept_stale set to true to receive it anyway.
+scope.run: for the rest of this run
+scope.endpoint: until the endpoint recovers
+budget.remaining: , and this run has {{retry_attempts_remaining}} retries left
