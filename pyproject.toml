@@ -1,0 +1,83 @@
+[build-system]
+# Hatchling writes the PEP 639 license fields only into core metadata 2.4 and makes
+# 2.4 its default from 1.27.0 on.
+# https://hatch.pypa.io/latest/history/hatchling/
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "leeward"
+dynamic = ["version"]
+description = "A proxy between an agent and everything it calls, so a failure arrives as a usable answer."
+readme = "README.md"
+requires-python = ">=3.11"
+# An SPDX license expression and the files that carry it, as PEP 639 defines them.
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "MithrilBytes" }]
+dependencies = [
+    "anyio>=4.5",
+    "httpcore2>=2.13",
+    "mcp>=2.2",
+    "pydantic>=2.7",
+    "PyYAML>=6.0",
+    "rich>=13.7",
+    "starlette>=0.40",
+    "typer>=0.12",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hypothesis>=6.100",
+    "jsonschema>=4.22",
+    "pyright>=1.1.380",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+leeward = "leeward.cli:main"
+
+[tool.hatch.version]
+# The CLI prints __version__, so the package holds the number and the build reads it
+# from there.
+# https://hatch.pypa.io/latest/version/
+path = "src/leeward/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/leeward"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "fakes", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "ANN", "BLE", "TRY", "ASYNC"]
+# TRY004 asks for TypeError on a type check, but pydantic turns only ValueError and
+# AssertionError raised by a validator into a validation error.
+# https://docs.pydantic.dev/latest/concepts/validators/#raising-validation-errors
+ignore = ["ANN401", "TRY003", "TRY004"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN"]
+
+[tool.pyright]
+include = ["src", "tests", "fakes", "scripts"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The pytest script, unlike python -m pytest, leaves the working directory off sys.path,
+# and the tests import the fakes from the repository root.
+# https://docs.pytest.org/en/stable/explanation/pythonpath.html
+pythonpath = ["."]
+addopts = "-q"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
