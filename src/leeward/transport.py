@@ -401,13 +401,16 @@ class Transport:
         *,
         fresh: bool = False,
         idle_s: float | None = None,
+        counters: Counters | None = None,
     ) -> Fetched:
         """One attempt. Raises nothing about the origin: failures come back as evidence.
 
         `fresh` opens a connection of its own, which is what makes a hedge worth
-        starting: the usual reason a request hangs is the connection it is on.
+        starting: the usual reason a request hangs is the connection it is on. Pass
+        `counters` to keep reading them after a cancellation, which is how the engine
+        knows whether a call that hit the hard deadline had a connection open.
         """
-        counters = Counters()
+        counters = counters if counters is not None else Counters()
         token = _COUNTERS.set(counters)
         started = self.clock()
         pool = self._unpooled if fresh else self._pool
