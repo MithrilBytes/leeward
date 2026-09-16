@@ -202,6 +202,7 @@ def build(
     ledger: RunLedger | None = None,
     breaker: Breaker | None = None,
     accept_stale_via: str | None = None,
+    known_failure: FailureClass | None = None,
     now: float = 0.0,
     clock_is_wrong: bool = False,
 ) -> CallOutcome:
@@ -245,7 +246,7 @@ def build(
             outcome=outcome,
             host_or_tool=host_or_tool(policy),
             volatility=policy.volatility,
-            failure_class=classification.failure_class if classification else None,
+            failure_class=classification.failure_class if classification else known_failure,
             disposition=classification.disposition if classification else None,
             attempts=attempts,
             elapsed_s=report.elapsed_s if report is not None else 0.0,
