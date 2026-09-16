@@ -130,6 +130,7 @@ class FakeOrigin:
         self.open_connections = 0
         self.accepted = 0
         self.bytes_served = 0
+        self._writers: set[asyncio.StreamWriter] = set()
 
     def route(self, pattern: str, handler: Handler) -> None:
         self._routes.append((pattern, handler))
@@ -148,6 +149,11 @@ class FakeOrigin:
         if server is None:
             return
         server.close()
+        # Since Python 3.12, wait_closed also waits for live connections to finish, and
+        # a client holding a keep-alive connection open would wait with it forever.
+        for writer in list(self._writers):
+            writer.close()
+        self._writers.clear()
         await server.wait_closed()
         self._server = None
 
@@ -167,6 +173,7 @@ class FakeOrigin:
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.accepted += 1
         self.open_connections += 1
+        self._writers.add(writer)
         try:
             while True:
                 request = await self._read_request(reader)
@@ -197,6 +204,7 @@ class FakeOrigin:
             return
         finally:
             self.open_connections -= 1
+            self._writers.discard(writer)
             writer.close()
             with contextlib.suppress(ConnectionResetError, BrokenPipeError):
                 await writer.wait_closed()
