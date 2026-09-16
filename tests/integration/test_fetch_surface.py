@@ -258,6 +258,8 @@ async def test_every_event_validates_and_no_live_endpoint_is_ever_recorded_stale
     await asgi_call(app, "GET", "/origin/status")
     await origin.stop()
     await asgi_call(app, "GET", "/origin/wiki/Foo")
+    # The stale serve starts a refresh behind it, which now has an origin to fail against.
+    await proxy.settle()
     await asgi_call(app, "GET", "/origin/status")
     proxy.events.close()
 
@@ -267,5 +269,5 @@ async def test_every_event_validates_and_no_live_endpoint_is_ever_recorded_stale
         assert_valid("event", event)
         assert not (event.get("volatility") == "live" and event.get("outcome") == "STALE")
     calls = [event for event in events if event["event"] == "call"]
-    assert [event["outcome"] for event in calls] == ["FRESH", "FRESH", "STALE", "DOWN"]
+    assert [event["outcome"] for event in calls] == ["FRESH", "FRESH", "STALE", "DOWN", "DOWN"]
     assert json.dumps(events)
