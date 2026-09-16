@@ -112,6 +112,8 @@ class Fetched:
     elapsed_s: float = 0.0
     connected: bool = False
     bytes_sent: bool = False
+    payload: object | None = None
+    """What a surface got back when the attempt was not HTTP, such as a tool result."""
 
     @property
     def status(self) -> int | None:

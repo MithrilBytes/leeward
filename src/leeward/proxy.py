@@ -317,7 +317,7 @@ class Proxy:
                 )
             self._store(request, policy, fetched, key, started, now)
             outcome = build(Outcome.FRESH, policy, report=report, ledger=ledger, now=now)
-            self._emit(
+            self.record(
                 outcome,
                 report,
                 surface,
@@ -356,7 +356,7 @@ class Proxy:
             accept_stale_via=_accept_stale_via(policy, withheld),
             now=now,
         )
-        self._emit(
+        self.record(
             outcome,
             report,
             surface,
@@ -415,7 +415,7 @@ class Proxy:
             ledger=ledger,
             now=self.clock(),
         )
-        self._emit(outcome, report, surface, run, ledger, cache=CacheInfo(hit=False))
+        self.record(outcome, report, surface, run, ledger, cache=CacheInfo(hit=False))
         return Served(
             outcome=outcome,
             status=_down_status(outcome),
@@ -480,7 +480,7 @@ class Proxy:
         revalidated: bool = False,
     ) -> Served:
         body = self.cache.read_body(entry)
-        known = self._known_failure(policy.endpoint)
+        known = self.known_failure(policy.endpoint)
         if served_stale is not None and served_stale.reason is StaleReason.REVALIDATING and known:
             # Promising a refresh that keeps failing would be a lie by omission: once
             # leeward knows the origin is down, the copy is served because of that.
@@ -496,7 +496,7 @@ class Proxy:
             now=self.clock(),
         )
         stale_outcome_guard(outcome)
-        self._emit(
+        self.record(
             outcome,
             report,
             surface,
@@ -518,7 +518,7 @@ class Proxy:
             from_cache=True,
         )
 
-    def _known_failure(self, endpoint: str) -> FailureClass | None:
+    def known_failure(self, endpoint: str) -> FailureClass | None:
         """The class this endpoint last failed with, when the last thing it did was fail."""
         health = self.health.get(endpoint)
         if health is None or health.last_outcome is not Outcome.DOWN:
@@ -553,13 +553,13 @@ class Proxy:
                 ledger=ledger,
                 now=self.clock(),
             )
-            self._emit(refreshed, report, Surface.FETCH, run, ledger, cache=CacheInfo(hit=False))
+            self.record(refreshed, report, Surface.FETCH, run, ledger, cache=CacheInfo(hit=False))
 
         task = asyncio.create_task(refresh())
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
-    def _emit(
+    def record(
         self,
         outcome: CallOutcome,
         report: CallReport | None,
