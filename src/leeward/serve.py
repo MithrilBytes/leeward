@@ -19,13 +19,14 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
+from starlette.routing import BaseRoute, Route
 
 from leeward.api import forecast, status
 from leeward.config import LoadedConfig
 from leeward.policy import CallTarget
 from leeward.proxy import Proxy
 from leeward.surfaces.fetch import mount_routes, refusal
+from leeward.surfaces.mcp import Mounted, mount_servers
 
 
 def build_app(proxy: Proxy, *, close_with_app: bool = True) -> Starlette:
@@ -44,16 +45,27 @@ def build_app(proxy: Proxy, *, close_with_app: bool = True) -> Starlette:
             return refusal(400, str(exc))
         return JSONResponse(forecast(proxy, target).as_dict())
 
+    mcp: Mounted | None = mount_servers(proxy) if proxy.config.surfaces.mcp.enabled else None
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncGenerator[None]:
-        yield
+        # A mounted Starlette app does not get a lifespan of its own, and the MCP
+        # session manager needs one, so each mounted app's is entered here.
+        async with contextlib.AsyncExitStack() as stack:
+            for mounted in mcp.apps if mcp is not None else []:
+                await stack.enter_async_context(mounted.router.lifespan_context(mounted))
+            yield
+            if mcp is not None:
+                await mcp.aclose()
         if close_with_app:
             await proxy.aclose()
 
-    routes = [
+    routes: list[BaseRoute] = [
         Route("/leeward/status", status_endpoint, methods=["GET"]),
         Route("/leeward/forecast", forecast_endpoint, methods=["GET"]),
     ]
+    if mcp is not None:
+        routes += mcp.routes
     if proxy.config.surfaces.fetch.enabled:
         routes += mount_routes(proxy)
     return Starlette(routes=routes, lifespan=lifespan)

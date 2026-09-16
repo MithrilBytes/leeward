@@ -28,7 +28,7 @@ import random
 import time
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from leeward.breaker import Admission, Breakers, Transition
 from leeward.budget import RunLedger
@@ -44,7 +44,7 @@ from leeward.classify import (
 )
 from leeward.deadlines import CallDeadlines, Deadline, DeadlineHit, LatencyEstimator
 from leeward.policy import ResolvedPolicy
-from leeward.transport import Call, Counters, Fetched, Transport
+from leeward.transport import Call, Counters, Fetched
 from leeward.vocab import ClockTrust, Disposition, FailureClass, FailureScope
 
 BACKOFF_BASE_S = 0.1
@@ -57,6 +57,25 @@ _SEVERITY = {
     Disposition.TRANSIENT: 0,
 }
 """Which attempt in a round speaks for the call: the one that closes the most doors."""
+
+
+class Caller(Protocol):
+    """Whatever performs one attempt: the HTTP transport, or an MCP tool call.
+
+    The engine does not care which. It counts attempts, watches deadlines and reads
+    the evidence that comes back, and that is the same work either way.
+    """
+
+    async def fetch(
+        self,
+        call: Call,
+        policy: ResolvedPolicy,
+        deadline: Deadline,
+        *,
+        fresh: bool = False,
+        idle_s: float | None = None,
+        counters: Counters | None = None,
+    ) -> Fetched: ...
 
 
 def decorrelated_jitter(previous_s: float, rng: random.Random) -> float:
@@ -116,7 +135,7 @@ class CallReport:
 class AttemptEngine:
     """Runs one call to completion, or to the first good reason to stop."""
 
-    transport: Transport
+    transport: Caller
     breakers: Breakers
     injector: FaultInjector | None = None
     estimator: LatencyEstimator = field(default_factory=LatencyEstimator)
@@ -135,6 +154,7 @@ class AttemptEngine:
         request_key: str | None = None,
         stale_available: bool = False,
         allow_hedge: bool = True,
+        caller: Caller | None = None,
     ) -> CallReport:
         started = self.clock()
         deadlines = CallDeadlines.start(policy, started)
@@ -163,7 +183,12 @@ class AttemptEngine:
             )
             round_started = self.clock()
             results, abandoned, background = await self._round(
-                call, policy, deadlines, hedging=hedging, stale_available=stale_available
+                call,
+                policy,
+                deadlines,
+                hedging=hedging,
+                stale_available=stale_available,
+                caller=caller or self.transport,
             )
             if abandoned:
                 return CallReport(
@@ -319,11 +344,12 @@ class AttemptEngine:
         *,
         hedging: bool,
         stale_available: bool,
+        caller: Caller,
     ) -> tuple[list[tuple[Fetched, bool]], bool, asyncio.Task[Fetched] | None]:
         """One attempt, plus a hedge when the wait goes on with nothing to show for it."""
         results: list[tuple[Fetched, bool]] = []
         counters = Counters()
-        first = asyncio.create_task(self._attempt(call, policy, deadlines.hard, counters))
+        first = asyncio.create_task(self._attempt(call, policy, deadlines.hard, counters, caller))
         attempts: dict[asyncio.Task[Fetched], tuple[bool, Counters]] = {first: (False, counters)}
         hedge_started = False
         try:
@@ -356,7 +382,9 @@ class AttemptEngine:
                 if hedging and not hedge_started and not results:
                     hedge_counters = Counters()
                     hedge = asyncio.create_task(
-                        self._attempt(call, policy, deadlines.hard, hedge_counters, fresh=True)
+                        self._attempt(
+                            call, policy, deadlines.hard, hedge_counters, caller, fresh=True
+                        )
                     )
                     attempts[hedge] = (True, hedge_counters)
                     hedge_started = True
@@ -399,6 +427,7 @@ class AttemptEngine:
         policy: ResolvedPolicy,
         deadline: Deadline,
         counters: Counters,
+        caller: Caller,
         *,
         fresh: bool = False,
     ) -> Fetched:
@@ -410,17 +439,13 @@ class AttemptEngine:
             else None
         )
         if injector is None or fault is None:
-            return await self.transport.fetch(
-                call, policy, deadline, fresh=fresh, counters=counters
-            )
+            return await caller.fetch(call, policy, deadline, fresh=fresh, counters=counters)
         started = self.clock()
         wait = injector.with_deadline(fault, policy.soft_deadline_s, policy.hard_deadline_s)
         if wait:
             await self.sleep(min(wait, deadline.remaining(started)))
         if fault.failure_class is None:
-            return await self.transport.fetch(
-                call, policy, deadline, fresh=fresh, counters=counters
-            )
+            return await caller.fetch(call, policy, deadline, fresh=fresh, counters=counters)
         connected = fault.failure_class is FailureClass.WEDGED
         counters.connected = connected
         return Fetched(

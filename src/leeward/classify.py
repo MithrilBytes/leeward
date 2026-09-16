@@ -483,6 +483,11 @@ def _wedged(deadline_s: float, snapshot: RunSnapshot, *, injected: bool = False)
     )
 
 
+def unknown_tool(message: str) -> bool:
+    """Whether a server is saying it does not know the tool, in any of the usual wordings."""
+    return _UNKNOWN_TOOL.search(message) is not None
+
+
 def _tool_error(
     evidence: ToolError, policy: ResolvedPolicy, snapshot: RunSnapshot
 ) -> Classification:
@@ -490,7 +495,7 @@ def _tool_error(
     if mapped is not None:
         return mapped
     code = evidence.code
-    if code == JSONRPC_INVALID_PARAMS and _UNKNOWN_TOOL.search(evidence.message):
+    if code == JSONRPC_INVALID_PARAMS and unknown_tool(evidence.message):
         if evidence.listed_before:
             return Classification(
                 FailureClass.TOOL_GONE,
