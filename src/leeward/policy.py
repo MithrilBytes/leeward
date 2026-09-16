@@ -19,7 +19,12 @@ from fnmatch import fnmatchcase
 from typing import Literal
 from urllib.parse import urlsplit
 
-from leeward.cache.freshness import delta_seconds, header_values, parse_cache_control
+from leeward.cache.freshness import (
+    StaleAllowance,
+    delta_seconds,
+    header_values,
+    parse_cache_control,
+)
 from leeward.config import ClassMapping, Config, Rule
 from leeward.units import human_duration
 from leeward.vocab import Volatility
@@ -144,6 +149,15 @@ class ResolvedPolicy:
     @property
     def endpoint(self) -> str:
         return self.target.endpoint
+
+    def stale_allowance(self) -> StaleAllowance:
+        """What the cache may serve here, and whether a rule or the origin decided it."""
+        return StaleAllowance(
+            volatility=self.volatility,
+            on_error_s=self.stale_on_error_s,
+            while_revalidating_s=self.stale_while_revalidate_s,
+            operator_set=self.stale_source.startswith("rules["),
+        )
 
     def explain(self) -> list[tuple[str, str, str]]:
         """(field, value, decided by) rows, in the order an operator reads them."""
