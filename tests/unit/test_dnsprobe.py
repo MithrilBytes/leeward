@@ -5,6 +5,7 @@ import asyncio
 import struct
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -32,8 +33,9 @@ class FakeResolver(asyncio.DatagramProtocol):
         self._transport: asyncio.DatagramTransport | None = None
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        assert isinstance(transport, asyncio.DatagramTransport)
-        self._transport = transport
+        # Before 3.12 the selector's datagram transport is not a DatagramTransport
+        # subclass, so this takes the loop at its word rather than asking isinstance.
+        self._transport = cast("asyncio.DatagramTransport", transport)
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         self.questions += 1
