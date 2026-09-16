@@ -145,8 +145,13 @@ class RunLedger:
         self.endpoint_retries[endpoint] = self.endpoint_retries.get(endpoint, 0) + 1
 
     def spend_seconds(self, seconds: float) -> None:
-        """Count time spent retrying: backoff sleeps and the duration of retry attempts."""
-        self.retry_seconds += max(seconds, 0.0)
+        """Count time spent retrying: backoff sleeps and the duration of retry attempts.
+
+        Spending exactly what remaining() offered can still land a rounding step past
+        the limit, so the total is held at the limit rather than allowed to pass it.
+        """
+        spent = self.retry_seconds + max(seconds, 0.0)
+        self.retry_seconds = min(spent, self.limits.retry_seconds)
 
     def note_wedge(self, endpoint: str) -> int:
         """Record a hang on this endpoint and return how many came before it."""
