@@ -27,11 +27,11 @@ surfaces:
     listen: 127.0.0.1:8787
     tiers:
       - name: primary
-        base_url: {primary}
+        base_url: {primary}/v1
         model: big-model
         api_key_env: LEEWARD_TEST_KEY
       - name: local
-        base_url: {local}
+        base_url: {local}/v1
         model: small-model
     status_line:
       enabled: {status_line}
@@ -334,3 +334,28 @@ def test_the_same_conversation_resolves_to_the_same_run() -> None:
     assert first == again
     other = conversation_of({"messages": [{"role": "user", "content": "something else"}]})
     assert other != first
+
+
+async def test_a_tier_url_is_its_base_plus_the_completions_path(
+    proxy: Proxy, primary: FakeOrigin
+) -> None:
+    """A base URL already carries the version, so leeward adds only the rest.
+
+    Found against a real provider: appending the whole client path to a base URL that
+    ends in /v1 asks for /v1/v1/chat/completions, which every provider answers with a
+    404 that says nothing useful.
+    """
+    primary.route(
+        "/v1/chat/completions",
+        constant(
+            Reply(
+                status=200,
+                headers={"Content-Type": "application/json"},
+                body=completion("answered"),
+            )
+        ),
+    )
+    reply = await post(app_for(proxy), ASK)
+    assert reply.status == 200
+    assert primary.requests[-1].path == "/v1/chat/completions"
+    assert "/v1/v1/" not in primary.requests[-1].path
