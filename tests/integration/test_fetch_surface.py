@@ -125,7 +125,8 @@ async def test_a_static_page_survives_the_origin_dying_and_a_live_one_does_not(
     again = await asgi_call(app, "GET", "/origin/wiki/Foo")
     assert again.header("X-Leeward-Outcome") == "STALE"
     informed = again.header("X-Leeward-Advice-Note") or ""
-    assert "is unreachable (CONNECT_REFUSED)" in informed
+    # Refused on Linux and macOS, dropped and so timed out on Windows.
+    assert "is unreachable (CONNECT_REFUSED)" in informed or "(CONNECT_TIMEOUT)" in informed
     assert "Retrying will not help until connectivity returns." in informed
 
     refused = await asgi_call(app, "GET", "/origin/status")
