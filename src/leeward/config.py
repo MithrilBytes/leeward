@@ -311,6 +311,11 @@ Corpus = Annotated[
 ]
 
 
+class EventSettings(Strict):
+    keep_days: int = Field(default=14, ge=1, le=3650)
+    """Days of event log kept. The log rotates daily; older files are removed on rotation."""
+
+
 class CacheSettings(Strict):
     max_bytes: Size = 2_000_000_000
     """How much disk the stored copies may take. Least recently used goes first, and a
@@ -342,6 +347,7 @@ class Config(Strict):
     classes: list[ClassMapping] = []
     corpora: list[Corpus] = []
     cache: CacheSettings = CacheSettings()
+    events: EventSettings = EventSettings()
     chaos: ChaosSettings = ChaosSettings()
     redaction: Redaction = Redaction()
     warm: WarmSettings = WarmSettings()

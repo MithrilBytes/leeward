@@ -9,6 +9,7 @@ kept so a test can check what actually reached the tool.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +66,13 @@ def build_server(name: str = "notes", journal: Journal | None = None) -> tuple[M
             "2021-02-15 texas load shed, 70 hours; "
             "2026-09-01 substation 7 relay, 4 hours."
         )
+
+    @server.tool()
+    async def slow_notes(query: str) -> str:
+        """Search the notes, slowly enough that a second caller arrives mid-call."""
+        kept.record("slow_notes", {"query": query})
+        await asyncio.sleep(0.2)
+        return f"3 incident notes mention {query}"
 
     @server.tool()
     def threat_intel_lookup(ioc: str) -> str:

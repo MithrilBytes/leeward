@@ -92,7 +92,7 @@ async def test_a_client_sees_the_same_tools_through_leeward(
     fronted, _proxy, _journal = front
     async with Client(fronted) as client:
         listed = (await client.list_tools()).tools
-    assert {tool.name for tool in listed} == {"incident_notes", "threat_intel_lookup"}
+    assert {tool.name for tool in listed} == {"incident_notes", "slow_notes", "threat_intel_lookup"}
     schema = listed[0].input_schema
     assert "accept_stale" in cast("dict[str, Any]", schema["properties"])
 
@@ -350,7 +350,7 @@ async def test_a_client_reaches_a_stdio_server_over_the_mounted_endpoint(served:
     async with Client(served) as client:
         listed = (await client.list_tools()).tools
         result = await client.call_tool("incident_notes", {"query": "blackout"})
-    assert {tool.name for tool in listed} == {"incident_notes", "threat_intel_lookup"}
+    assert {tool.name for tool in listed} == {"incident_notes", "slow_notes", "threat_intel_lookup"}
     assert "3 incident notes mention blackout" in describe(result)
     assert leeward_field(result)["outcome"] == "FRESH"
 
@@ -368,7 +368,7 @@ async def test_a_tool_that_keeps_its_name_and_changes_its_arguments_is_noticed(
         good_call = await client.call_tool("incident_notes", {"question": "blackout"})
     proxy.events.close()
 
-    assert {tool.name for tool in listed} == {"incident_notes", "threat_intel_lookup"}
+    assert {tool.name for tool in listed} == {"incident_notes", "slow_notes", "threat_intel_lookup"}
 
     # The call built from the earlier listing is refused once, not retried, and the note
     # says why rather than blaming the server.
@@ -526,3 +526,18 @@ async def test_a_resource_that_was_never_read_fails_as_a_protocol_error(
     await fronted.aclose()
     await proxy.aclose()
     assert "[leeward]" in raised.value.message
+
+
+async def test_identical_tool_calls_in_flight_become_one_call_to_the_server(
+    front: tuple[ServerFront, Proxy, Journal],
+) -> None:
+    """A second agent asking the same question at the same moment is one question."""
+    fronted, _proxy, journal = front
+    async with Client(fronted) as client:
+        results = await asyncio.gather(
+            *(client.call_tool("slow_notes", {"query": "blackout"}) for _ in range(5))
+        )
+
+    assert [result.is_error for result in results] == [False] * 5
+    assert all("3 incident notes mention blackout" in describe(item) for item in results)
+    assert journal.hits("slow_notes") == 1

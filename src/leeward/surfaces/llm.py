@@ -32,7 +32,7 @@ from leeward.attempt import AttemptRecord, CallReport
 from leeward.budget import RunLedger, conversation_hash, resolve_run
 from leeward.classify import OK, Classification, Evidence, RunSnapshot, classify
 from leeward.classify import Response as Response_
-from leeward.config import Tier
+from leeward.config import Config, Tier
 from leeward.deadlines import CallDeadlines, Deadline
 from leeward.events import CacheInfo, RunRef, TokenInfo
 from leeward.notes import status_line
@@ -448,14 +448,16 @@ def mount_routes(proxy: Proxy) -> list[Route]:
     ]
 
 
-def tier_warnings(proxy: Proxy) -> list[str]:
+def tier_warnings(config: Config) -> list[str]:
     """What an operator should hear at startup about the ladder they configured."""
-    warnings: list[str] = []
-    for tier in tiers_of(proxy):
-        if tier.api_key_env and not os.environ.get(tier.api_key_env):
-            warnings.append(f"tier {tier.name}: {tier.api_key_env} is not set in the environment")
-    seen = [tier.name for tier in tiers_of(proxy)]
-    if len(set(seen)) != len(seen):
+    tiers = config.surfaces.llm.tiers
+    warnings = [
+        f"tier {tier.name}: {tier.api_key_env} is not set in the environment"
+        for tier in tiers
+        if tier.api_key_env and not os.environ.get(tier.api_key_env)
+    ]
+    names = [tier.name for tier in tiers]
+    if len(set(names)) != len(names):
         warnings.append("two tiers share a name; the first one wins in the log")
     return warnings
 

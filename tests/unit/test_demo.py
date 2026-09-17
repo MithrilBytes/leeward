@@ -88,3 +88,19 @@ def test_a_readme_without_the_regions_that_carry_the_argument_is_an_error() -> N
 
     with pytest.raises(ValueError, match="missing required regions: measured, notes"):
         offered({"suite": "s"}, "<!-- demo:suite -->\nold\n<!-- /demo:suite -->\n")
+
+
+def test_a_recording_is_stretched_and_no_single_pause_runs_long() -> None:
+    import json
+
+    from scripts.cast import retime, to_v2
+
+    events = [(0.0, "o", "first"), (0.5, "o", "second"), (30.0, "o", "after a long wait")]
+    timed = retime(events, slow=2.0, cap_s=3.0)
+    assert [round(gap, 3) for gap, _kind, _data in timed] == [0.0, 1.0, 6.0]
+
+    written = to_v2({"term": {"cols": 92, "rows": 34}, "timestamp": 1}, timed).splitlines()
+    header = json.loads(written[0])
+    assert (header["version"], header["width"], header["height"]) == (2, 92, 34)
+    # v2 stores the time since the start, not the gap before each event.
+    assert [json.loads(line)[0] for line in written[1:]] == [0.0, 1.0, 7.0]

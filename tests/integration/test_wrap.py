@@ -134,7 +134,7 @@ async def test_wrap_passes_the_server_through_and_stops_it_on_close(
         result = await client.call_tool("incident_notes", {"query": "blackout"})
         server = pid_in(pid_file)
 
-    assert {tool.name for tool in tools} == {"incident_notes", "threat_intel_lookup"}
+    assert {tool.name for tool in tools} == {"incident_notes", "slow_notes", "threat_intel_lookup"}
     assert [item.name for item in prompts] == ["summarize_incident"]
     assert "Summarize incident blackout" in cast("TextContent", prompt.messages[0].content).text
     assert [str(item.uri) for item in resources] == ["notes://index"]
@@ -247,7 +247,7 @@ async def test_a_client_that_stops_wrap_with_sigterm_stops_the_server_too(
             process.kill()
             await process.wait()
 
-    assert len(listed["result"]["tools"]) == 2
+    assert len(listed["result"]["tools"]) == 3
     assert code == 0
     assert await gone(server), "the wrapped server outlived leeward"
 

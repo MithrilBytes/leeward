@@ -14,6 +14,7 @@ appending at the same moment cannot interleave inside a line.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import os
@@ -163,6 +164,10 @@ def redact_url(url: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
 
 
+DEFAULT_KEEP_DAYS = 14
+DAY_SECONDS = 86_400
+
+
 class EventLog:
     """Appends events under a directory, one file per UTC day."""
 
@@ -172,10 +177,12 @@ class EventLog:
         redact: frozenset[str],
         *,
         record_bodies: bool = False,
+        keep_days: int = DEFAULT_KEEP_DAYS,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.directory = directory
         self.record_bodies = record_bodies
+        self.keep_days = keep_days
         self._redact = redact
         self._clock = clock
         self._fd: int | None = None
@@ -237,9 +244,28 @@ class EventLog:
             flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
             self._fd = os.open(self.directory / f"{day}.jsonl", flags, 0o600)
             self._fd_day = day
+            self.prune(now)
         view = memoryview(data)
         while view:
             view = view[os.write(self._fd, view) :]
+
+    def prune(self, now: float | None = None) -> list[Path]:
+        """Remove day files older than the window, as the log rolls over to a new one.
+
+        The log is the record of what leeward did, and a record nobody deletes becomes a
+        disk that fills. Rotation is the natural moment: it happens once a day, off the
+        path of any call, and the file being written is never a candidate.
+        """
+        moment = now if now is not None else self._clock()
+        oldest = rfc3339(moment - self.keep_days * DAY_SECONDS)[:10]
+        removed: list[Path] = []
+        for path in event_files(self.directory):
+            if path.stem >= oldest or path.stem == self._fd_day:
+                continue
+            with contextlib.suppress(OSError):
+                path.unlink()
+                removed.append(path)
+        return removed
 
     def close(self) -> None:
         if self._fd is not None:

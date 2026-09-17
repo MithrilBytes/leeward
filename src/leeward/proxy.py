@@ -162,7 +162,9 @@ class Proxy:
         self.loaded = loaded
         self.config = config
         self.clock = clock
-        self.events = EventLog(data / "events", config.redact_headers())
+        self.events = EventLog(
+            data / "events", config.redact_headers(), keep_days=config.events.keep_days
+        )
         self.cache = CacheStore(
             data / "cache",
             max_bytes=loaded.config.cache.max_bytes,
