@@ -1,4 +1,4 @@
-.PHONY: install lock lock-check test lint typecheck check dist clean
+.PHONY: install lock lock-check test lint typecheck check dist demo clean
 
 # make lock resolves on the interpreter in .venv and writes its version into the first
 # line of constraints.txt. Other supported interpreters install the same pins.
@@ -35,6 +35,12 @@ check: lint typecheck test
 dist:
 	rm -rf dist
 	./.venv/bin/python -m scripts.dist --outdir dist --python $(PYTHON)
+
+# make demo arms each failure against the fakes, which takes about a minute because one
+# case is a real 30 second hang, runs the test suite, and rewrites the regions of
+# README.md marked demo from what came back.
+demo:
+	./.venv/bin/python -m scripts.demo --readme README.md
 
 clean:
 	rm -rf .leeward .pytest_cache .ruff_cache .hypothesis dist
