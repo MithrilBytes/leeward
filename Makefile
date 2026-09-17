@@ -4,28 +4,35 @@
 # line of constraints.txt. Other supported interpreters install the same pins.
 PYTHON ?= python3.13
 
+# A virtual environment puts its programs in Scripts on Windows and bin everywhere else.
+ifeq ($(OS),Windows_NT)
+VENV := .venv/Scripts
+else
+VENV := .venv/bin
+endif
+
 # constraints.txt holds one exact version for every package in .[dev]. make lock
 # rewrites it from a fresh resolution, and make lock-check fails when pyproject.toml
 # no longer resolves to it. Both consult the package index.
 install:
 	$(PYTHON) -m venv .venv
-	./.venv/bin/pip install --constraint constraints.txt --editable '.[dev]'
+	$(VENV)/pip install --constraint constraints.txt --editable '.[dev]'
 
 lock:
-	./.venv/bin/python -m scripts.lock
+	$(VENV)/python -m scripts.lock
 
 lock-check:
-	./.venv/bin/python -m scripts.lock --check
+	$(VENV)/python -m scripts.lock --check
 
 test:
-	./.venv/bin/python -m pytest
+	$(VENV)/python -m pytest
 
 lint:
-	./.venv/bin/ruff check .
-	./.venv/bin/ruff format --check .
+	$(VENV)/ruff check .
+	$(VENV)/ruff format --check .
 
 typecheck:
-	./.venv/bin/pyright
+	$(VENV)/pyright
 
 check: lint typecheck test
 
@@ -34,13 +41,13 @@ check: lint typecheck test
 # consults the package index for the build backend and the pinned dependencies.
 dist:
 	rm -rf dist
-	./.venv/bin/python -m scripts.dist --outdir dist --python $(PYTHON)
+	$(VENV)/python -m scripts.dist --outdir dist --python $(PYTHON)
 
 # make demo arms each failure against the fakes, which takes about a minute because one
 # case is a real 30 second hang, runs the test suite, and rewrites the regions of
 # README.md marked demo from what came back.
 demo:
-	./.venv/bin/python -m scripts.demo --readme README.md
+	$(VENV)/python -m scripts.demo --readme README.md
 
 clean:
 	rm -rf .leeward .pytest_cache .ruff_cache .hypothesis dist
