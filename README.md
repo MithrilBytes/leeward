@@ -28,21 +28,21 @@ The HTTP cases run in process against a fake origin on a real socket. The MCP ca
 
 <!-- demo:measured -->
 
-Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.1.0, 2026-09-17.
+Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.2.0, 2026-09-17.
 
 | Case | Result | Time | Attempts | Reached upstream |
 | --- | --- | --- | --- | --- |
 | Origin hangs after connecting | `DOWN{WEDGED}`, 504, `DO_NOT_RETRY` | 30.01 s | 2 | 2 |
-| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 0.9 ms | 0 | 0 |
-| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 5.4 ms | 1 | 1 |
-| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 0.7 ms | 0 | 0 |
-| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 105 ms | 2 | 0 |
-| MCP tool hangs | `DOWN{WEDGED}`, `isError`, `RETRY_AFTER` | 30.01 s | 1 | 1 |
-| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 7.9 ms | 1 | 0 |
-| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 3.9 ms | 1 | 0 |
-| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.3 ms | 0 | 0 |
-| Another tool on that server, next call | `FRESH`, `PROCEED` | 430 ms | 1 | 1 |
-| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 3.9 ms | 1 | 0 |
+| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 1.0 ms | 0 | 0 |
+| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 5.6 ms | 1 | 1 |
+| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 1.2 ms | 0 | 0 |
+| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 106 ms | 2 | 0 |
+| MCP tool hangs | `DOWN{WEDGED}`, `isError`, `RETRY_AFTER` | 30.02 s | 1 | 1 |
+| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 8.0 ms | 1 | 0 |
+| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 3.8 ms | 1 | 0 |
+| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.6 ms | 0 | 0 |
+| Another tool on that server, next call | `FRESH`, `PROCEED` | 433 ms | 1 | 1 |
+| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 3.8 ms | 1 | 0 |
 
 <!-- /demo:measured -->
 
@@ -149,7 +149,7 @@ Notes are what the model reads. They are capped at 400 characters, always prefix
 <!-- demo:notes -->
 
 ```text
-[leeward] STALE: served a copy stored 35ms ago because intel/incident_notes is
+[leeward] STALE: served a copy stored 34ms ago because intel/incident_notes is
 unreachable (TOOL_GONE). This endpoint is classified `volatile`, so the copy may be out
 of date. Check anything time-sensitive. Retrying will not help for the rest of this run.
 
@@ -174,7 +174,7 @@ Mark those endpoints `class: live` and leeward will never serve them from cache,
 <!-- demo:note-live -->
 
 ```text
-[leeward] DOWN: 127.0.0.1 returned nothing (CONNECT_REFUSED after 103ms, 2 attempts).
+[leeward] DOWN: 127.0.0.1 returned nothing (CONNECT_REFUSED after 105ms, 2 attempts).
 This endpoint is classified `live`: a cached value from 0s ago exists but is not being
 served, because only the current value is meaningful here. Treat this value as unknown
 and say so rather than estimating it.

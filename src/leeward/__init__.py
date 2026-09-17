@@ -5,4 +5,4 @@ A failure reaches the agent as an outcome it can act on: a fresh answer, a label
 older copy, or a statement of what went wrong and whether waiting can help.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
