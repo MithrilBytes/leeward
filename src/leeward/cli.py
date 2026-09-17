@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """The leeward command line.
 
-Every command that reports takes --json. The commands that only read local state
-(classify and events here, and status, forecast and report once the proxy has state
-to show) open no network connection, so they still answer during the outage they
-describe. serve and wrap run until they are stopped and write only to stderr, which
-for wrap is not a courtesy: its stdout is the MCP stream.
+Every command takes --json. The commands that only read local state (classify and
+events here, and status, forecast and report once the proxy has state to show) open no
+network connection, so they still answer during the outage they describe. serve and
+wrap run until they are stopped. serve reports its start on stdout; wrap writes only to
+stderr, which is not a courtesy: its stdout is the MCP stream.
 """
 
 from __future__ import annotations
@@ -247,7 +247,7 @@ def events(
 
 
 @app.command()
-def serve(config_path: ConfigOption = None) -> None:
+def serve(config_path: ConfigOption = None, json_output: JsonOption = False) -> None:
     """Run the proxy on the address in leeward.yaml until it is stopped."""
     # Imported here rather than at the top, where it would double the start time of
     # every other command.
@@ -257,14 +257,34 @@ def serve(config_path: ConfigOption = None) -> None:
     loaded = _load(config_path)
     surfaces = loaded.config.surfaces
     host, port = listen_address(loaded)
-    _err.print(f"leeward {__version__} listening on http://{host}:{port}", markup=False)
-    if not any(surface.enabled for surface in (surfaces.mcp, surfaces.fetch, surfaces.llm)):
-        _err.print(
-            "no surface is enabled, so only /leeward/status and /leeward/forecast answer",
-            markup=False,
+    enabled = [
+        label
+        for label, surface in (
+            ("mcp", surfaces.mcp),
+            ("fetch", surfaces.fetch),
+            ("llm", surfaces.llm),
         )
-    for warning in policy_warnings(loaded.config):
-        _err.print(f"warning: {warning}", markup=False)
+        if surface.enabled
+    ]
+    warnings = policy_warnings(loaded.config)
+    if not enabled:
+        warnings.insert(
+            0, "no surface is enabled, so only /leeward/status and /leeward/forecast answer"
+        )
+    url = f"http://{host}:{port}"
+    if json_output:
+        report = {
+            "leeward": __version__,
+            "listening": url,
+            "surfaces": enabled,
+            "warnings": warnings,
+        }
+        _print_json(report, compact=True)
+        sys.stdout.flush()
+    else:
+        _err.print(f"leeward {__version__} listening on {url}", markup=False)
+        for warning in warnings:
+            _err.print(f"warning: {warning}", markup=False)
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(run(loaded))
 
@@ -305,6 +325,12 @@ def wrap(
             "--config", "-c", help="A leeward.yaml for defaults and rules; read only if named."
         ),
     ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json", help="Write startup warnings as JSON lines on stderr; stdout carries MCP."
+        ),
+    ] = False,
 ) -> None:
     """Front one stdio MCP server: put `leeward wrap --` before the command that starts it."""
     from leeward.wrap import cache_warnings, run, server_name, wrap_config
@@ -315,7 +341,11 @@ def wrap(
     base = _load(config_path) if config_path is not None else LoadedConfig(Config(), None)
     loaded = wrap_config(base, server, cache or [], data_dir)
     for warning in cache_warnings(loaded, server, cache or []):
-        _err.print(f"leeward: {warning}", markup=False)
+        if json_output:
+            sys.stderr.write(json.dumps({"warning": warning}, ensure_ascii=False) + "\n")
+        else:
+            _err.print(f"leeward: {warning}", markup=False)
+    sys.stderr.flush()
     loop = asyncio.new_event_loop()
     with contextlib.suppress(KeyboardInterrupt):
         if loop.run_until_complete(run(loaded, server, command)):

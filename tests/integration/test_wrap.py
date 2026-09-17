@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import sys
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -239,3 +240,29 @@ async def test_a_client_that_stops_wrap_with_sigterm_stops_the_server_too(
     assert len(listed["result"]["tools"]) == 2
     assert code == 0
     assert await gone(server), "the wrapped server outlived leeward"
+
+
+def test_wrap_says_at_startup_when_a_named_tool_will_not_be_cached(data: Path) -> None:
+    """Read off the real command's stderr, as a client's log would show it."""
+    base = [sys.executable, "-m", "leeward", "wrap"]
+    tail = ["--cache", "create_issue", "--data-dir", str(data), "--", sys.executable, "-c", "pass"]
+    reason = (
+        "--cache create_issue has no effect: its class is never, decided by tool name"
+        " matches defaults.write_tool_pattern"
+    )
+    for options, expected in (
+        ([], f"leeward: {reason}"),
+        (["--json"], json.dumps({"warning": reason})),
+    ):
+        finished = subprocess.run(
+            [*base, *options, *tail],
+            cwd=REPO_ROOT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert finished.returncode == 0, finished.stderr
+        assert finished.stdout == ""
+        assert expected in finished.stderr.splitlines()
