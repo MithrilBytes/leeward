@@ -110,7 +110,7 @@ What changes is what a failure looks like:
 
 `leeward serve` runs the same machinery on a local port, and `leeward serve --json` reports where it listens as one JSON line. `leeward init` writes a starter `leeward.yaml`, and `leeward.example.yaml` has every setting with comments.
 
-`leeward warm` fills the cache from the corpora in the configuration before anything needs it: a list of URLs you wrote, or a sitemap leeward reads itself. It is paced per host, capped in bytes, and resumable in the only way that cannot disagree with itself, by skipping whatever is already stored and fresh. `--dry-run` says what it would fetch and fetches nothing. robots.txt is consulted for URLs leeward discovered through a sitemap and not for a list you wrote down, and every warm event records which it was.
+`leeward warm` fills the cache from the corpora in the configuration before anything needs it: a list of URLs you wrote, a sitemap leeward reads itself, or a local directory mapped onto the URLs it stands in for, which needs no network at all. It is paced per host, capped in bytes, and resumable in the only way that cannot disagree with itself, by skipping whatever is already stored and fresh. `--dry-run` says what it would fetch and fetches nothing. robots.txt is consulted for URLs leeward discovered through a sitemap and not for a list you wrote down, and every warm event records which it was.
 
 `leeward doctor` checks the wiring: configuration, rules, data directory, note templates, the event log, and which MCP client configurations actually start a server through `leeward wrap`. `leeward report` adds up the event log into calls, outcomes, attempts, latencies and how many calls were answered without reaching anyone. `leeward cache ls|stats|pin|rm` shows and prunes what is stored, and `leeward chaos arm|ls|clear` makes a failure happen on purpose, which is how the table above is produced. All of them read local state and open no connection.
 
@@ -239,7 +239,7 @@ make dist       # build the sdist and wheel, then install and run the wheel in a
 
 Not built yet:
 
-- `zim`, `directory` and `mcp_resources` corpora. `url_list` and `sitemap` work, on a cron schedule or when something goes down.
+- `zim` and `mcp_resources` corpora. `url_list`, `sitemap` and `directory` work, on a cron schedule or when something goes down.
 
 Known limits:
 
