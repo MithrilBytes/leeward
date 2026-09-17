@@ -19,9 +19,11 @@ import pytest
 import uvicorn
 from fakes.mcp_server import Journal, build_server, vanish
 from mcp.client.client import Client
+from mcp.server.context import ServerRequestContext
+from mcp.server.lowlevel.server import Server
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
-from mcp_types import CONNECTION_CLOSED
+from mcp_types import CONNECTION_CLOSED, ListToolsResult, PaginatedRequestParams, Tool
 from pydantic import BaseModel, ConfigDict
 
 from leeward.config import parse_config
@@ -159,6 +161,27 @@ async def test_a_second_call_to_a_vanished_tool_costs_nothing(
     assert outcome["failure"]["underlying_class"] == "TOOL_GONE"
     assert outcome["advice"] == "DO_NOT_RETRY"
     assert journal.hits("threat_intel_lookup") == 1
+
+
+async def test_every_page_of_a_paginated_tool_listing_comes_through(tmp_path: Path) -> None:
+    pages = {None: (["first", "second"], "2"), "2": (["third"], None)}
+
+    async def listing(
+        _context: ServerRequestContext[Any], params: PaginatedRequestParams | None
+    ) -> ListToolsResult:
+        names, following = pages[params.cursor if params is not None else None]
+        tools = [Tool(name=name, input_schema={"type": "object"}) for name in names]
+        return ListToolsResult(tools=tools, next_cursor=following)
+
+    loaded = parse_config(CONFIG.format(data=tmp_path / "data"), tmp_path / "leeward.yaml")
+    proxy = Proxy(loaded)
+    spec = loaded.config.surfaces.mcp.servers["notes"]
+    paged = Upstream("notes", spec, server=Server("paged", on_list_tools=listing))
+    async with Client(ServerFront(proxy, paged)) as client:
+        listed = (await client.list_tools()).tools
+    await paged.aclose()
+    await proxy.aclose()
+    assert [tool.name for tool in listed] == ["first", "second", "third"]
 
 
 class Window(BaseModel):
