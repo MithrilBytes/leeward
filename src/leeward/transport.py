@@ -19,12 +19,14 @@ Nothing here decides anything. It reports what happened; classify.py names it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import socket
 import ssl
 import time
 from collections.abc import (
     AsyncIterable,
+    AsyncIterator,
     Callable,
     Coroutine,
     Iterable,
@@ -363,6 +365,47 @@ def _read_evidence(exc: BaseException, counters: Counters) -> Evidence:
 
 
 @dataclass
+@dataclass(slots=True)
+class Streamed:
+    """A response whose body the caller reads itself, a chunk at a time.
+
+    The whole engine is built on reading a body to the end, which is what makes a
+    classification and a cached copy possible. A streamed answer gives up both: nothing
+    can be stored, and a failure part way through cannot be retried, because the caller
+    already has the first half. What is left is a deadline between chunks and an honest
+    account of where it stopped, which is what `chunks` raises.
+    """
+
+    status: int
+    headers: tuple[tuple[str, str], ...]
+    _response: httpcore2.Response
+    _stack: contextlib.AsyncExitStack
+    _stall_s: float
+    received: int = 0
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        source = self._response.stream
+        if not isinstance(source, AsyncIterable):
+            raise EvidenceError(Malformed(detail="the origin's body did not arrive as a stream"))
+        stream = aiter(source)
+        while True:
+            try:
+                async with asyncio.timeout(self._stall_s):
+                    chunk = await anext(stream)
+            except StopAsyncIteration:
+                return
+            except TimeoutError as exc:
+                raise EvidenceError(ReadTimedOut(bytes_received=self.received)) from exc
+            except (httpcore2.ProtocolError, OSError, ssl.SSLError) as exc:
+                raise EvidenceError(_read_evidence(exc, Counters())) from exc
+            self.received += len(chunk)
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._stack.aclose()
+
+
+@dataclass(slots=True)
 class Transport:
     """Outbound HTTP for the whole proxy: a pooled client, and a fresh one for hedges."""
 
@@ -394,6 +437,44 @@ class Transport:
     async def aclose(self) -> None:
         await self._pool.aclose()
         await self._unpooled.aclose()
+
+    async def open(
+        self,
+        call: Call,
+        policy: ResolvedPolicy,
+        deadline: Deadline,
+        *,
+        idle_s: float | None = None,
+    ) -> Streamed:
+        """Start a response and hand back its body unread. The caller closes it.
+
+        Everything before the first byte is classified the way any other attempt is, so
+        a tier that refuses or cannot be reached is still a failure a caller can fail
+        over from. After the first byte it is the caller's stream.
+        """
+        stall = idle_s if idle_s is not None else policy.soft_deadline_s
+        stack = contextlib.AsyncExitStack()
+        extensions = {"timeout": {"pool": deadline.remaining(self.clock())}}
+        try:
+            response = await stack.enter_async_context(
+                self._pool.stream(
+                    call.method,
+                    call.url,
+                    headers=list(call.headers),
+                    content=call.body or None,
+                    extensions=extensions,
+                )
+            )
+        except EvidenceError:
+            await stack.aclose()
+            raise
+        except (httpcore2.ProtocolError, OSError, ssl.SSLError, httpcore2.TimeoutException) as exc:
+            await stack.aclose()
+            raise EvidenceError(_read_evidence(exc, Counters())) from exc
+        pairs = tuple(
+            (name.decode("latin-1"), value.decode("latin-1")) for name, value in response.headers
+        )
+        return Streamed(response.status, pairs, response, stack, stall)
 
     async def fetch(
         self,

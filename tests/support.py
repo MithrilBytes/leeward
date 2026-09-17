@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -76,7 +77,13 @@ async def asgi_call(
     sent: list[dict[str, object]] = []
 
     async def receive() -> dict[str, object]:
-        return incoming.pop(0) if incoming else {"type": "http.disconnect"}
+        if incoming:
+            return incoming.pop(0)
+        # A streaming response races its body against a disconnect, so saying the client
+        # has gone the moment the request is read would end every stream at zero bytes.
+        # A real client waits here, and so does this one until the response is done.
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
     async def send(message: dict[str, object]) -> None:
         sent.append(message)

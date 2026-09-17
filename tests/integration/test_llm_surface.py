@@ -45,6 +45,8 @@ rules:
     match: {{url: "*/v1/chat/completions"}}
     class: never
     max_attempts: 1
+    soft_deadline: 1s
+    hard_deadline: 10s
   - name: articles
     match: {{url: "*/wiki/*"}}
     class: static
@@ -195,12 +197,65 @@ async def test_a_rate_limited_tier_is_reported_as_a_rate_limit(
     assert "leeward" in error
 
 
-async def test_streaming_is_refused_in_the_shape_a_client_parses(proxy: Proxy) -> None:
+SSE = (
+    b'data: {"choices":[{"delta":{"content":"because "}}]}\n\n'
+    b'data: {"choices":[{"delta":{"content":"two lines tripped"}}]}\n\n'
+    b"data: [DONE]\n\n"
+)
+
+
+async def test_a_streamed_completion_passes_through_with_the_tier_named(
+    proxy: Proxy, primary: FakeOrigin
+) -> None:
+    primary.route(
+        "/v1/chat/completions",
+        constant(Reply(status=200, headers={"Content-Type": "text/event-stream"}, body=SSE)),
+    )
     reply = await post(app_for(proxy), {**ASK, "stream": True})
-    assert reply.status == 400
+    assert reply.status == 200
+    assert reply.header("X-Leeward-Tier") == "primary"
+    assert reply.body == SSE
+
+
+async def test_a_tier_that_will_not_open_fails_over_before_any_bytes_reach_the_client(
+    proxy: Proxy, primary: FakeOrigin, local: FakeOrigin
+) -> None:
+    primary.route("/v1/chat/completions", constant(Reply(status=503, body=b"overloaded")))
+    local.route("/v1/streamed", constant(Reply(status=200, body=SSE)))
+    await local.stop()
+    reply = await post(app_for(proxy), {**ASK, "stream": True})
+
+    # Both tiers were tried, nothing partial was sent, and the failure is JSON.
+    assert reply.status == 502
     error = cast("dict[str, Any]", reply.json()["error"])
-    assert error["type"] == "invalid_request_error"
-    assert "streaming" in error["message"]
+    assert error["tried"] == ["primary", "local"]
+    assert error["message"].startswith("[leeward]")
+
+
+async def test_a_stream_that_stops_early_says_so_in_the_stream(
+    proxy: Proxy, primary: FakeOrigin
+) -> None:
+    primary.route(
+        "/v1/chat/completions",
+        constant(
+            Reply(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+                body=SSE,
+                stall_after=40,
+            )
+        ),
+    )
+    reply = await post(app_for(proxy), {**ASK, "stream": True})
+    assert reply.status == 200
+
+    # The client keeps what arrived, and the last event explains why there is no more.
+    assert reply.body.startswith(b'data: {"choices"')
+    assert b'"error"' in reply.body
+    assert reply.body.rstrip().endswith(b"data: [DONE]")
+    tail = json.loads(reply.body.split(b"data: ")[-2])
+    assert tail["error"]["code"] in ("READ_TIMEOUT", "PROTOCOL_ERROR", "SERVER_ERROR")
+    assert "[leeward]" in tail["error"]["message"]
 
 
 async def test_tokens_and_the_tier_are_in_the_event_log(
