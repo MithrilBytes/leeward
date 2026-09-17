@@ -1,4 +1,4 @@
-.PHONY: install lock lock-check test lint typecheck check clean
+.PHONY: install lock lock-check test lint typecheck check dist clean
 
 # make lock resolves on the interpreter in .venv and writes its version into the first
 # line of constraints.txt. Other supported interpreters install the same pins.
@@ -29,5 +29,12 @@ typecheck:
 
 check: lint typecheck test
 
+# make dist builds the sdist and wheel into dist/, then installs the wheel into a new
+# virtual environment on $(PYTHON) and runs it from outside the repository. It
+# consults the package index for the build backend and the pinned dependencies.
+dist:
+	rm -rf dist
+	./.venv/bin/python -m scripts.dist --outdir dist --python $(PYTHON)
+
 clean:
-	rm -rf .leeward .pytest_cache .ruff_cache .hypothesis
+	rm -rf .leeward .pytest_cache .ruff_cache .hypothesis dist
