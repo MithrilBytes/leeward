@@ -214,7 +214,11 @@ class Session:
 
 @asynccontextmanager
 async def wrapped(
-    scratch: Path, label: str, *options: str, vanish_after: int | None = None
+    scratch: Path,
+    label: str,
+    *options: str,
+    vanish_after: int | None = None,
+    hang: bool = False,
 ) -> AsyncGenerator[Session]:
     """`leeward wrap` in front of the fake MCP server, both as real processes."""
     base = scratch / label
@@ -225,6 +229,8 @@ async def wrapped(
     }
     if vanish_after is not None:
         env["LEEWARD_FAKE_VANISH_AFTER"] = str(vanish_after)
+    if hang:
+        env["LEEWARD_FAKE_HANG"] = "1"
     command = [*("-m", "leeward", "wrap", "--name", "intel", "--data-dir", str(base / "data"))]
     command += [*options, "--", sys.executable, "-m", "fakes.mcp_server"]
     parameters = StdioServerParameters(command=sys.executable, args=command, env=env, cwd=REPO_ROOT)
@@ -264,6 +270,15 @@ def call_attempts(data: Path) -> list[int]:
         for event in read_events(data / "events")
         if event["event"] == "call"
     ]
+
+
+async def hang_case(scratch: Path, measured: Measured) -> None:
+    """A tool that takes the call and never answers, at the default hard deadline."""
+    async with wrapped(scratch, "hang", hang=True) as session:
+        hung = await timed(session, "incident_notes", {"query": "blackout"})
+        data = session.data
+    record(measured, "MCP tool hangs", hung, call_attempts(data)[0])
+    measured.notes["hung_tool"] = describe(hung[0]).splitlines()[0]
 
 
 async def mcp_cases(scratch: Path, measured: Measured) -> None:
@@ -367,10 +382,15 @@ def fill(text: str, filled: Mapping[str, str]) -> str:
 
 
 async def measure(scratch: Path) -> Measured:
-    measured = Measured([], {})
-    await http_cases(scratch, measured)
-    await mcp_cases(scratch, measured)
-    return measured
+    http, hung, mcp = Measured([], {}), Measured([], {}), Measured([], {})
+    # The two cases that wait out a 30 second deadline run side by side.
+    await asyncio.gather(http_cases(scratch, http), hang_case(scratch, hung))
+    await mcp_cases(scratch, mcp)
+    parts = (http, hung, mcp)
+    return Measured(
+        [row for part in parts for row in part.rows],
+        {name: note for part in parts for name, note in part.notes.items()},
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
