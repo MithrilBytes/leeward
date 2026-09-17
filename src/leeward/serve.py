@@ -26,6 +26,7 @@ from leeward.api import forecast, status
 from leeward.config import LoadedConfig
 from leeward.policy import CallTarget
 from leeward.proxy import Proxy
+from leeward.schedule import Scheduler
 from leeward.surfaces.fetch import mount_routes, refusal
 from leeward.surfaces.llm import mount_routes as model_routes
 from leeward.surfaces.mcp import Mounted, mount_servers
@@ -76,6 +77,13 @@ def build_app(proxy: Proxy, *, close_with_app: bool = True) -> Starlette:
     return Starlette(routes=routes, lifespan=lifespan)
 
 
+def _scheduler(proxy: Proxy) -> Scheduler | None:
+    """A scheduler only where a corpus asked for one, so an idle task is never started."""
+    from leeward.schedule import Scheduler, wanted
+
+    return Scheduler(proxy) if wanted(proxy.config.corpora) else None
+
+
 def listen_address(loaded: LoadedConfig) -> tuple[str, int]:
     """The one address the shared surfaces listen on."""
     surfaces = loaded.config.surfaces
@@ -101,9 +109,15 @@ async def run(loaded: LoadedConfig) -> None:
         build_app(proxy), host=host, port=port, log_level="warning", access_log=False
     )
     shared = uvicorn.Server(config)
+    background = _scheduler(proxy)
     forward = loaded.config.surfaces.forward
     if not forward.enabled:
-        await shared.serve()
+        if background is None:
+            await shared.serve()
+            return
+        async with asyncio.TaskGroup() as group:
+            group.create_task(shared.serve())
+            group.create_task(background.run_forever())
         return
     tunnel = ForwardProxy(proxy)
     tunnel_host, _, tunnel_port = forward.listen.rpartition(":")
@@ -112,5 +126,7 @@ async def run(loaded: LoadedConfig) -> None:
         async with asyncio.TaskGroup() as group:
             group.create_task(shared.serve())
             group.create_task(tunnel.serve_forever())
+            if background is not None:
+                group.create_task(background.run_forever())
     finally:
         await tunnel.aclose()
