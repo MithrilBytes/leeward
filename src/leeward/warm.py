@@ -49,6 +49,22 @@ MAX_SITEMAP_BYTES = 8 * 1024 * 1024
 """A sitemap larger than this is not one leeward is going to read in one piece."""
 
 MAX_URLS = 50_000
+
+KNOWN_TYPES = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".rst": "text/x-rst",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".jsonl": "application/jsonl",
+}
+"""Types a documentation directory is made of, named here rather than looked up.
+
+The standard library's table differs between Python versions: 3.11 does not know
+`.md` and 3.13 does, which is the sort of difference that shows up as a file served
+as a download. text/markdown is RFC 7763.
+"""
 LOCATION = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.IGNORECASE)
 """Sitemaps are read with a pattern rather than an XML parser on purpose: the only thing
 needed from the document is its locations, and a parser would also read entity
@@ -329,14 +345,13 @@ class Warmer:
                 result.already_fresh += 1
                 continue
             policy = resolve(self.proxy.config, CallTarget.parse(url))
-            kind, _encoding = mimetypes.guess_type(path.name)
             self.proxy.cache.put(
                 key=key,
                 url=url,
                 method="GET",
                 endpoint=policy.endpoint,
                 status=200,
-                headers=(("Content-Type", kind or "application/octet-stream"),),
+                headers=(("Content-Type", content_type(path)),),
                 body=body,
                 requested_at=now,
                 received_at=now,
@@ -404,6 +419,15 @@ async def warm_all(
     """Every corpus asked for, one after another, so hosts are not warmed in parallel."""
     warmer = Warmer(proxy, trigger=trigger)
     return [await warmer.warm(corpus, dry_run=dry_run) for corpus in warmer.corpora(names)]
+
+
+def content_type(path: Path) -> str:
+    """What a local file would have been served as."""
+    suffix = path.suffix.lower()
+    if suffix in KNOWN_TYPES:
+        return KNOWN_TYPES[suffix]
+    kind, _encoding = mimetypes.guess_type(path.name)
+    return kind or "application/octet-stream"
 
 
 def unsupported_kinds(corpora: Iterable[Corpus]) -> list[str]:
