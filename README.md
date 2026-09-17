@@ -14,7 +14,7 @@ An agent that calls a tool and gets back `Error: request failed` cannot tell a t
 
 ## Measured
 
-`make demo` arms each failure against the fakes in this repository and rewrites this table and the notes below from what came back. The HTTP cases run in process against a fake origin on a real socket. The MCP cases run `leeward wrap` and the fake server as separate processes, and the server drops a tool or is killed with SIGKILL partway through. Attempts come from leeward's event log; "reached upstream" counts requests the origin read and tool calls the server ran, from the fakes' own counters.
+`make demo` arms each failure against the fakes in this repository and rewrites this table and the notes below from what came back. The HTTP cases run in process against a fake origin on a real socket. The MCP cases run `leeward wrap` and the fake server as separate processes, and the server drops a tool, hangs, or is killed with SIGKILL partway through. Attempts come from leeward's event log; "reached upstream" counts requests the origin read and tool calls the server ran, from the fakes' own counters.
 
 <!-- demo:measured -->
 
@@ -23,21 +23,22 @@ Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.1.0, 2
 | Case | Result | Time | Attempts | Reached upstream |
 | --- | --- | --- | --- | --- |
 | Origin hangs after connecting | `DOWN{WEDGED}`, 504, `DO_NOT_RETRY` | 30.01 s | 2 | 2 |
-| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 0.9 ms | 0 | 0 |
-| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 5.5 ms | 1 | 1 |
-| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 1.4 ms | 0 | 0 |
-| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 106 ms | 2 | 0 |
-| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 10 ms | 1 | 0 |
-| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 4.0 ms | 1 | 0 |
-| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.5 ms | 0 | 0 |
-| Another tool on that server, next call | `FRESH`, `PROCEED` | 432 ms | 1 | 1 |
-| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 4.8 ms | 1 | 0 |
+| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 0.8 ms | 0 | 0 |
+| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 4.7 ms | 1 | 1 |
+| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 1.5 ms | 0 | 0 |
+| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 108 ms | 2 | 0 |
+| MCP tool hangs | `DOWN{WEDGED}`, `isError`, `RETRY_AFTER` | 30.02 s | 1 | 1 |
+| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 9.4 ms | 1 | 0 |
+| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 3.7 ms | 1 | 0 |
+| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.1 ms | 0 | 0 |
+| Another tool on that server, next call | `FRESH`, `PROCEED` | 425 ms | 1 | 1 |
+| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 4.6 ms | 1 | 0 |
 
 <!-- /demo:measured -->
 
 <!-- demo:suite -->
 
-The suite is 432 tests, 11 seconds on the machine above.
+The suite is 447 tests, 13 seconds on the machine above.
 
 <!-- /demo:suite -->
 
@@ -68,14 +69,14 @@ What changes is what a failure looks like:
 - **A tool that disappears, or a server that dies,** gets one `DOWN{TOOL_GONE}` result that says it is permanent for this run, and later calls to that tool are refused without reaching the server. Other tools keep working; if the server died, the next call to one of them starts it again.
 - **A call that hangs** returns `DOWN{WEDGED}` at the hard deadline, 30 seconds by default.
 - **`--cache TOOL`** keeps that tool's successful results. When the server fails, the last one comes back as `STALE`, exactly as the server sent it, behind a note that says how old it is. Name only tools that are safe to call twice. leeward cannot tell from a name whether a tool has side effects, so it caches nothing unless asked, never caches a tool whose name reads like a write (`create_`, `delete_`, `send_` and similar), and warns at startup if `--cache` names one.
-- **Every result** carries leeward's decision in `_meta` under `io.github.mithrilbytes.leeward/outcome`: the outcome, the failure class, the advice, and the age of anything served. Structured content is left exactly as the tool sent it, so output schemas still validate.
+- **Every result** carries leeward's decision in `_meta` under `io.github.mithrilbytes.leeward/outcome`: the outcome, the failure class, the advice, and the age of anything served. A failed result also carries it in `structuredContent.leeward`, and so does a stale one when the tool's output schema has room for the key. Otherwise structured content stays exactly as the tool sent it, so output schemas still validate.
 - **Every call** is an event in a JSONL log under `~/.leeward/events`. `leeward events` prints it and `leeward events --follow` tails it.
 
-`--name` sets the server's name in events and rules (read off the command when it is not given, `server-filesystem` here), `--data-dir` moves the cache and the log, and `--config` reads a `leeward.yaml` for rules and deadlines.
+`--name` sets the server's name in events and rules (read off the command when it is not given, `server-filesystem` here), `--data-dir` moves the cache and the log, `--config` reads a `leeward.yaml` for rules and deadlines, and `--json` writes startup warnings as JSON lines on stderr, since stdout belongs to the client.
 
 ### With a configuration file
 
-`leeward serve` runs the same machinery on a local port. `leeward init` writes a starter `leeward.yaml`, and `leeward.example.yaml` has every setting with comments.
+`leeward serve` runs the same machinery on a local port, and `leeward serve --json` reports where it listens as one JSON line. `leeward init` writes a starter `leeward.yaml`, and `leeward.example.yaml` has every setting with comments.
 
 **MCP servers over HTTP.** Each configured server gets its own path, with the same tool names.
 
@@ -100,7 +101,7 @@ Notes are what the model reads. They are capped at 400 characters, always prefix
 <!-- demo:notes -->
 
 ```text
-[leeward] STALE: served a copy stored 37ms ago because intel/incident_notes is
+[leeward] STALE: served a copy stored 35ms ago because intel/incident_notes is
 unreachable (TOOL_GONE). This endpoint is classified `volatile`, so the copy may be out
 of date. Check anything time-sensitive. Retrying will not help for the rest of this run.
 
@@ -125,7 +126,7 @@ Mark those endpoints `class: live` and leeward will never serve them from cache,
 <!-- demo:note-live -->
 
 ```text
-[leeward] DOWN: 127.0.0.1 returned nothing (CONNECT_REFUSED after 104ms, 2 attempts).
+[leeward] DOWN: 127.0.0.1 returned nothing (CONNECT_REFUSED after 106ms, 2 attempts).
 This endpoint is classified `live`: a cached value from 0s ago exists but is not being
 served, because only the current value is meaningful here. Treat this value as unknown
 and say so rather than estimating it.
