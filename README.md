@@ -193,7 +193,7 @@ make dist       # build the sdist and wheel, then install and run the wheel in a
 
 ## Status
 
-`leeward wrap` fronts a stdio MCP server, `leeward serve` runs MCP servers over HTTP and HTTP tools on one port and a CONNECT proxy on another, and `report`, `doctor`, `cache`, `chaos`, `classify` and `events` read and prod local state. Underneath: the classifier, breakers, run budgets, deadlines, the cache and its freshness rules, notes and outcomes, the event log, and `/leeward/status` and `/leeward/forecast`. Tested on Linux, macOS and Windows with Python 3.11 and 3.13.
+`leeward wrap` fronts a stdio MCP server, `leeward serve` runs MCP servers over HTTP and HTTP tools on one port and a CONNECT proxy on another, and `report`, `doctor`, `cache`, `chaos`, `classify` and `events` read and prod local state. Underneath: the classifier, breakers, run budgets, deadlines, the cache and its freshness rules, notes and outcomes, the event log, and `/leeward/status` and `/leeward/forecast`. Tested on Linux and macOS with Python 3.11 and 3.13.
 
 Not built yet:
 
@@ -203,6 +203,7 @@ Not built yet:
 
 Known limits:
 
+- Windows is unverified. The parts of leeward that were not portable are fixed, and the checks run there, but the suite cannot finish: the MCP SDK's stdio client stops a server by sending `SIGINT`, which Windows rejects, so every test that starts a real stdio server fails while shutting down.
 - A CONNECT tunnel is opaque, so mode C classifies failures and owns deadlines but can never cache. leeward says so once per endpoint per run rather than on every call.
 - A tool that keeps its name and changes its arguments is noticed and logged, and the client is asked for a fresh listing, but leeward cannot rewrite a call the agent already built.
 - Run identity on the stateless 2026-07-28 revision of MCP comes from the caller: `_meta` under `io.github.mithrilbytes.leeward/run`, or an `X-Leeward-Run` header. Without either, everything on one connection shares a run, and for `leeward wrap` that means one process.
