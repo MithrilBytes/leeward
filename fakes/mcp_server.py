@@ -57,7 +57,14 @@ def build_server(name: str = "notes", journal: Journal | None = None) -> tuple[M
             await anyio.sleep_forever()
         if kept.notes_fail_after is not None and seen > kept.notes_fail_after:
             raise RuntimeError("the document store is not answering")
-        return f"3 incident notes mention {query}"
+        # Concrete enough that a model summarising it has nothing to invent, which
+        # matters for the recording: an answer with no detail invites one.
+        return (
+            f"3 incident notes mention {query}: "
+            "2003-08-14 northeast cascade, 61 hours to restore; "
+            "2021-02-15 texas load shed, 70 hours; "
+            "2026-09-01 substation 7 relay, 4 hours."
+        )
 
     @server.tool()
     def threat_intel_lookup(ioc: str) -> str:

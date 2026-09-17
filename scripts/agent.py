@@ -9,7 +9,7 @@ What the model says is its own business and will differ between runs. What is be
 shown is what the agent had to work with when the server went away.
 
     ollama serve
-    ollama pull qwen2.5:7b-instruct-q4_K_M
+    ollama pull granite3.3:8b
     python -m scripts.agent
 """
 
@@ -35,20 +35,20 @@ from mcp.client.stdio import StdioServerParameters
 from mcp_types import CallToolResult, TextContent, Tool
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MODEL = os.environ.get("LEEWARD_DEMO_MODEL", "qwen2.5:7b-instruct-q4_K_M")
+MODEL = os.environ.get("LEEWARD_DEMO_MODEL", "granite3.3:8b")
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 MAX_ROUNDS = 4
 TIMEOUT_S = 120.0
 
 SEED = 7
 SYSTEM = (
-    "You are an incident analyst. Answer in English, in at most two sentences."
-    " Use the tools to answer; do not answer from memory. If a tool result carries a"
-    " note from leeward, take it at its word and pass on what it says about freshness."
-    " If a call fails, say plainly what you could and could not establish."
+    "You are an incident analyst with tools. Call a tool to find facts, then answer in"
+    " English in at most two sentences. If a tool result carries a note from leeward,"
+    " repeat what it says about how current the answer is. If a call fails, say plainly"
+    " what you could not establish."
 )
-FIRST = "What do the incident notes say about the blackout?"
-SECOND = "Check the notes for the blackout once more, and tell me how current your answer is."
+FIRST = "Search the incident notes for the blackout and tell me what they say."
+SECOND = "Search the incident notes for the blackout again, and say how current your answer is."
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -135,10 +135,10 @@ def outcome_of(result: CallToolResult) -> str:
 async def ask(client: Client, tools: list[Tool], question: str, colour: str) -> Turn:
     """One question, and however many tool calls the model decides it needs."""
     turn = Turn()
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": question},
-    ]
+    # The guidance rides in the user turn rather than a system one. granite3.3 through
+    # Ollama stops emitting tool calls when a system message is present, and answers from
+    # memory instead, which would make this demo a lie.
+    messages: list[dict[str, Any]] = [{"role": "user", "content": f"{SYSTEM}\n\n{question}"}]
     say(f"{colour}> {question}{RESET}")
     offered = [as_tool(tool) for tool in tools]
     for _round in range(MAX_ROUNDS):

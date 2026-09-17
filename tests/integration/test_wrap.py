@@ -139,7 +139,7 @@ async def test_wrap_passes_the_server_through_and_stops_it_on_close(
     assert "Summarize incident blackout" in cast("TextContent", prompt.messages[0].content).text
     assert [str(item.uri) for item in resources] == ["notes://index"]
     assert cast("TextResourceContents", read.contents[0]).text == "blackout\nbrownout\nfailover"
-    assert describe(result) == "3 incident notes mention blackout"
+    assert describe(result).startswith("3 incident notes mention blackout")
     assert outcome_of(result)["outcome"] == "FRESH"
     assert await gone(server), "the wrapped server outlived the session"
 
@@ -197,7 +197,8 @@ async def test_a_cached_tool_answers_with_its_last_result_after_the_server_dies(
     assert outcome["outcome"] == "STALE"
     assert outcome["failure"]["class"] == "TOOL_GONE"
     assert cast("dict[str, Any]", stale.structured_content)["leeward"] == outcome
-    assert origin_content(stale) == origin_content(fresh) == ["3 incident notes mention blackout"]
+    assert origin_content(stale) == origin_content(fresh)
+    assert origin_content(fresh)[0].startswith("3 incident notes mention blackout")
     note = describe(stale).splitlines()[0]
     assert note.startswith("[leeward] STALE: served a copy stored")
     assert "(TOOL_GONE)" in note
