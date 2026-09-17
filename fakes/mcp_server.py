@@ -84,6 +84,16 @@ def vanish(server: MCPServer, tool: str = "threat_intel_lookup") -> None:
     server.remove_tool(tool)
 
 
+def redefine(server: MCPServer, tool: str = "incident_notes") -> None:
+    """Keep a tool's name and change what it takes, as a breaking redeploy does."""
+    server.remove_tool(tool)
+
+    @server.tool(name=tool)
+    def replacement(question: str, limit: int = 3) -> str:
+        """Search the incident notes, with the arguments this version wants."""
+        return f"{limit} incident notes mention {question}"
+
+
 def main() -> None:
     """Run over stdio, which is how the demo reaches it.
 

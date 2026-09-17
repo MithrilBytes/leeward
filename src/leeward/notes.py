@@ -103,9 +103,14 @@ class NoteFacts:
     server_name: str | None = None
     soft_deadline_s: float | None = None
     clock_is_wrong: bool = False
+    schema_changed: bool = False
+    """The tool was listed with different arguments earlier in this run."""
     advice: Advice | None = None
     """The advice beside the note, which the note must not contradict."""
 
+
+ARGUMENT_CLASSES = frozenset({FailureClass.INVALID_REQUEST, FailureClass.NOT_FOUND})
+"""Failures a caller can cause by sending arguments that no longer fit the tool."""
 
 CONNECTIVITY_CLASSES = frozenset(
     {
@@ -259,6 +264,8 @@ def compose(facts: NoteFacts) -> str:
         return ""
     templates = template_texts()
     text = _stale(facts, templates) if facts.outcome is Outcome.STALE else _down(facts, templates)
+    if facts.schema_changed and facts.failure_class in ARGUMENT_CLASSES:
+        text = f"{text} {clause('schema.changed')}"
     return _fit(text)
 
 

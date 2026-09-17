@@ -209,7 +209,9 @@ class ServerFront(MCPServer):
         listed = await self.upstream.list_tools()
         run = RunRef.internal(f"tools-list-{self.upstream.name}")
         if self.upstream.gone:
-            self._refreshed(set(self.upstream.gone))
+            self._gone(set(self.upstream.gone))
+        if self.upstream.changed:
+            self._refreshed(f"schema changed: {self._names(self.upstream.changed)}")
         for tool in listed:
             endpoint = f"{self.upstream.name}/{tool.name}"
             cleared = self.proxy.breakers.clear("endpoint", endpoint)
@@ -229,15 +231,22 @@ class ServerFront(MCPServer):
                 )
         return [self._augment(tool) for tool in listed] if self._accepts_stale_argument else listed
 
-    def _refreshed(self, gone: set[str]) -> None:
-        """Record a tools/list that came back short, since it is what makes the case."""
+    @staticmethod
+    def _names(tools: set[str]) -> str:
+        return ", ".join(sorted(tools))
+
+    def _gone(self, tools: set[str]) -> None:
+        self._refreshed(f"gone from tools/list: {self._names(tools)}")
+
+    def _refreshed(self, message: str) -> None:
+        """Record a tools/list that differs from the last one, since it is the evidence."""
         self.proxy.events.emit(
             "tools_refresh",
             RunRef.internal(f"tools-list-{self.upstream.name}"),
             {
                 "surface": str(Surface.MCP),
                 "endpoint": self.upstream.name,
-                "message": f"gone from tools/list: {', '.join(sorted(gone))}",
+                "message": message,
             },
         )
 
@@ -274,7 +283,7 @@ class ServerFront(MCPServer):
             policy,
             ledger,
             request_key=key,
-            caller=ToolCaller(self.upstream, name, asked, on_refresh=self._refreshed),
+            caller=ToolCaller(self.upstream, name, asked, on_refresh=self._gone),
         )
         after = proxy.clock()
         if report.ok and report.fetched is not None:
@@ -309,6 +318,7 @@ class ServerFront(MCPServer):
             ledger=ledger,
             breaker=proxy.breakers.get("endpoint", policy.endpoint),
             accept_stale_via="argument" if self._accepts_stale_argument else None,
+            schema_changed=name in self.upstream.drifted,
             now=after,
         )
         proxy.record(

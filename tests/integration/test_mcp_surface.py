@@ -17,7 +17,7 @@ from typing import Any, cast
 
 import pytest
 import uvicorn
-from fakes.mcp_server import Journal, build_server, vanish
+from fakes.mcp_server import Journal, build_server, redefine, vanish
 from mcp.client.client import Client
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel.server import Server
@@ -346,3 +346,41 @@ async def test_a_client_reaches_a_stdio_server_over_the_mounted_endpoint(served:
     assert {tool.name for tool in listed} == {"incident_notes", "threat_intel_lookup"}
     assert "3 incident notes mention blackout" in describe(result)
     assert leeward_field(result)["outcome"] == "FRESH"
+
+
+async def test_a_tool_that_keeps_its_name_and_changes_its_arguments_is_noticed(
+    front: tuple[ServerFront, Proxy, Journal], upstream: tuple[MCPServer, Journal], tmp_path: Path
+) -> None:
+    fronted, proxy, _journal = front
+    server, _other = upstream
+    async with Client(fronted) as client:
+        await client.list_tools()
+        redefine(server)
+        listed = (await client.list_tools()).tools
+        stale_call = await client.call_tool("incident_notes", {"query": "blackout"})
+        good_call = await client.call_tool("incident_notes", {"question": "blackout"})
+    proxy.events.close()
+
+    assert {tool.name for tool in listed} == {"incident_notes", "threat_intel_lookup"}
+
+    # The call built from the earlier listing is refused once, not retried, and the note
+    # says why rather than blaming the server.
+    assert stale_call.is_error
+    outcome = leeward_field(stale_call)
+    assert outcome["failure"]["class"] == "INVALID_REQUEST"
+    assert outcome["failure"]["attempts"] == 1
+    assert outcome["advice"] == "DO_NOT_RETRY"
+    assert "arguments changed during this run" in str(outcome["note"])
+    assert_valid("outcome", outcome)
+
+    assert not good_call.is_error
+    assert "3 incident notes mention blackout" in describe(good_call)
+
+    events = list(read_events(tmp_path / "data" / "events"))
+    drift = [
+        event
+        for event in events
+        if event["event"] == "tools_refresh" and "schema changed" in str(event["message"])
+    ]
+    assert len(drift) == 1
+    assert "incident_notes" in str(drift[0]["message"])
