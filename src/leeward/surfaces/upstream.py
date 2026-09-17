@@ -37,6 +37,10 @@ from leeward.deadlines import Deadline
 from leeward.policy import ResolvedPolicy
 from leeward.transport import Call, Counters, Fetched
 
+MAX_LIST_PAGES = 100
+"""The most pages of tools/list followed, so a server that always hands back a cursor
+cannot keep a listing open."""
+
 CONFIRM_CLOSED_S = 1.0
 """The longest the request confirming a closed connection may take, within the call's deadline."""
 
@@ -117,16 +121,25 @@ class Upstream:
             await self._closing.wait()
 
     async def list_tools(self) -> list[Tool]:
-        """Ask the server what it offers now, not what the client remembers.
+        """Ask the server what it offers now, every page of it, not what the client remembers.
 
         `cache_mode="refresh"` matters here: the SDK client caches listings, and a
-        cached listing is exactly what hides a tool that has gone.
+        cached listing is exactly what hides a tool that has gone. A listing cut off at
+        the page limit is kept but not used to decide that anything has gone.
         """
         client = await self.client()
-        listed = list((await client.list_tools(cache_mode="refresh")).tools)
+        listed: list[Tool] = []
+        cursor: str | None = None
+        for _ in range(MAX_LIST_PAGES):
+            page = await client.list_tools(cursor=cursor, cache_mode="refresh")
+            listed += page.tools
+            cursor = page.next_cursor
+            if cursor is None:
+                break
         names = {tool.name for tool in listed}
-        self.gone = self.known_tools - names
-        self.known_tools = names
+        complete = cursor is None
+        self.gone = self.known_tools - names if complete else set()
+        self.known_tools = names if complete else self.known_tools | names
         self.seen_tools |= names
         return listed
 
