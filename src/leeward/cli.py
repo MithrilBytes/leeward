@@ -15,12 +15,14 @@ import contextlib
 import datetime
 import json
 import os
+import platform
 import re
+import shutil
 import sys
 from collections.abc import Mapping
 from importlib.resources import files
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 from rich.console import Console
@@ -37,7 +39,8 @@ from leeward.config import (
 )
 from leeward.events import follow, read_events, run_id
 from leeward.policy import CallTarget, resolve
-from leeward.units import parse_duration
+from leeward.templates import template_set_sha256
+from leeward.units import human_bytes, parse_duration
 
 app = typer.Typer(
     add_completion=False,
@@ -356,6 +359,177 @@ def wrap(
             # https://docs.python.org/3/library/asyncio-runner.html#asyncio.Runner.close
             os._exit(0)
     loop.close()
+
+
+@app.command()
+def report(
+    since: Annotated[
+        str | None, typer.Option("--since", help="A duration such as 24h, or a date-time.")
+    ] = None,
+    run: Annotated[str | None, typer.Option("--run", help="Only events from this run.")] = None,
+    config_path: ConfigOption = None,
+    json_output: JsonOption = False,
+) -> None:
+    """Add up the event log: what was served, what failed, and what cost nothing."""
+    from leeward.report import headline, summarize
+
+    loaded = _load(config_path)
+    try:
+        cutoff = _parse_since(since)
+    except ValueError as exc:
+        raise _fail(f"--since: {exc}") from exc
+    events = read_events(loaded.data_dir / "events", run=run, since=cutoff)
+    summary = summarize(events)
+    if json_output:
+        _print_json(summary)
+        return
+    totals = cast("Mapping[str, object]", summary["totals"])
+    _out.print(headline(summary), markup=False)
+    rows = cast("list[Mapping[str, object]]", summary["endpoints"])
+    if not rows:
+        return
+    table = Table(box=None, pad_edge=False)
+    for column in ("endpoint", "calls", "fresh", "stale", "down", "free", "p50", "p95", "worst"):
+        table.add_column(column, justify="left" if column in ("endpoint", "worst") else "right")
+    for row in rows:
+        outcomes = cast("Mapping[str, int]", row["outcomes"])
+        classes = cast("Mapping[str, int]", row["failure_classes"])
+        worst = max(classes.items(), key=lambda item: item[1])[0] if classes else ""
+        table.add_row(
+            str(row["endpoint"]),
+            str(row["calls"]),
+            str(outcomes.get("FRESH", 0)),
+            str(outcomes.get("STALE", 0)),
+            str(outcomes.get("DOWN", 0)),
+            str(row["answered_without_network"]),
+            f"{row['p50_ms']}ms",
+            f"{row['p95_ms']}ms",
+            worst,
+        )
+    _out.print(table)
+    served = _bytes_from(totals)
+    if served:
+        _out.print(f"{served} served from cache", markup=False)
+
+
+def _bytes_from(totals: Mapping[str, object]) -> str:
+    from leeward.units import human_bytes
+
+    count = totals.get("bytes_served_from_cache")
+    return human_bytes(count) if isinstance(count, int) and count else ""
+
+
+@app.command()
+def doctor(config_path: ConfigOption = None, json_output: JsonOption = False) -> None:
+    """Check the wiring: configuration, data directory, event log and MCP clients."""
+    from leeward.policy import policy_warnings
+
+    checks: list[dict[str, object]] = []
+
+    def record(name: str, ok: bool, detail: str, *, warn: bool = False) -> None:
+        state = "warn" if warn and not ok else ("ok" if ok else "fail")
+        checks.append({"check": name, "state": state, "detail": detail})
+
+    record("version", True, f"leeward {__version__} on Python {platform.python_version()}")
+
+    try:
+        loaded = load_config(config_path)
+        source = str(loaded.source) if loaded.source is not None else "built-in defaults"
+        record("configuration", True, source)
+        for warning in policy_warnings(loaded.config):
+            record("rules", False, warning, warn=True)
+    except ConfigError as exc:
+        record("configuration", False, str(exc).splitlines()[0])
+        _finish(checks, json_output)
+        return
+
+    data = loaded.data_dir
+    try:
+        data.mkdir(parents=True, exist_ok=True)
+        probe = data / ".doctor"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        free = shutil.disk_usage(data).free
+        record("data directory", True, f"{data} is writable, {human_bytes(free)} free")
+    except OSError as exc:
+        record("data directory", False, f"{data}: {exc}")
+
+    record("note templates", bool(template_set_sha256()), f"set {template_set_sha256()[:12]}")
+
+    events_dir = data / "events"
+    newest = _newest_event(events_dir)
+    if newest is None:
+        record("event log", True, "no events yet", warn=False)
+    else:
+        record("event log", True, f"newest event {newest}")
+
+    wired = _wrapped_servers()
+    if wired:
+        for client, servers in wired:
+            record("client", True, f"{client}: {', '.join(servers)}")
+    else:
+        record(
+            "client",
+            False,
+            "no MCP client configuration mentions leeward wrap; see the README for the one line",
+            warn=True,
+        )
+    _finish(checks, json_output)
+
+
+def _finish(checks: list[dict[str, object]], json_output: bool) -> None:
+    failed = [check for check in checks if check["state"] == "fail"]
+    if json_output:
+        _print_json({"ok": not failed, "checks": checks})
+    else:
+        marks = {"ok": "ok  ", "warn": "warn", "fail": "FAIL"}
+        for check in checks:
+            _out.print(
+                f"{marks[str(check['state'])]} {check['check']}: {check['detail']}", markup=False
+            )
+    if failed:
+        raise typer.Exit(1)
+
+
+def _newest_event(directory: Path) -> str | None:
+    newest: str | None = None
+    for event in read_events(directory):
+        stamp = event.get("ts")
+        if isinstance(stamp, str) and (newest is None or stamp > newest):
+            newest = stamp
+    return newest
+
+
+def _wrapped_servers() -> list[tuple[str, list[str]]]:
+    """Which MCP client configurations already start a server through leeward."""
+    found: list[tuple[str, list[str]]] = []
+    for item in MCP_CLIENT_CONFIGS:
+        candidate = Path(item).expanduser()
+        if not candidate.is_file():
+            continue
+        try:
+            parsed = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        servers = _mapping(parsed).get("mcpServers")
+        named = [name for name, entry in _mapping(servers).items() if _through_leeward(entry)]
+        if named:
+            found.append((str(candidate), sorted(named)))
+    return found
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    """An object read out of someone else's JSON, with its shape stated once."""
+    return cast("Mapping[str, object]", value) if isinstance(value, dict) else {}
+
+
+def _through_leeward(entry: object) -> bool:
+    spec = _mapping(entry)
+    command = spec.get("command")
+    arguments = spec.get("args")
+    listed = cast("list[object]", arguments) if isinstance(arguments, list) else []
+    first = listed[0] if listed else None
+    return isinstance(command, str) and Path(command).name == "leeward" and first == "wrap"
 
 
 def main() -> None:
