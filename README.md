@@ -18,27 +18,27 @@ An agent that calls a tool and gets back `Error: request failed` cannot tell a t
 
 <!-- demo:measured -->
 
-Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.1.0, 2026-09-16.
+Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.1.0, 2026-09-17.
 
 | Case | Result | Time | Attempts | Reached upstream |
 | --- | --- | --- | --- | --- |
 | Origin hangs after connecting | `DOWN{WEDGED}`, 504, `DO_NOT_RETRY` | 30.01 s | 2 | 2 |
-| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 0.8 ms | 0 | 0 |
-| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 4.7 ms | 1 | 1 |
-| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 1.5 ms | 0 | 0 |
+| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 1.0 ms | 0 | 0 |
+| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 5.8 ms | 1 | 1 |
+| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 0.9 ms | 0 | 0 |
 | Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 108 ms | 2 | 0 |
 | MCP tool hangs | `DOWN{WEDGED}`, `isError`, `RETRY_AFTER` | 30.02 s | 1 | 1 |
-| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 9.4 ms | 1 | 0 |
+| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 9.6 ms | 1 | 0 |
 | MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 3.7 ms | 1 | 0 |
 | Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.1 ms | 0 | 0 |
-| Another tool on that server, next call | `FRESH`, `PROCEED` | 425 ms | 1 | 1 |
-| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 4.6 ms | 1 | 0 |
+| Another tool on that server, next call | `FRESH`, `PROCEED` | 441 ms | 1 | 1 |
+| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 3.6 ms | 1 | 0 |
 
 <!-- /demo:measured -->
 
 <!-- demo:suite -->
 
-The suite is 447 tests, 13 seconds on the machine above.
+The suite is 465 tests, 13 seconds on the machine above.
 
 <!-- /demo:suite -->
 
@@ -77,6 +77,16 @@ What changes is what a failure looks like:
 ### With a configuration file
 
 `leeward serve` runs the same machinery on a local port, and `leeward serve --json` reports where it listens as one JSON line. `leeward init` writes a starter `leeward.yaml`, and `leeward.example.yaml` has every setting with comments.
+
+`leeward doctor` checks the wiring: configuration, rules, data directory, note templates, the event log, and which MCP client configurations actually start a server through `leeward wrap`. `leeward report` adds up the event log into calls, outcomes, attempts, latencies and how many calls were answered without reaching anyone. `leeward cache ls|stats|pin|rm` shows and prunes what is stored, and `leeward chaos arm|ls|clear` makes a failure happen on purpose, which is how the table above is produced. All of them read local state and open no connection.
+
+**Everything else over HTTPS.** Turn on the forward proxy and point `HTTPS_PROXY` at it.
+
+```yaml
+surfaces: {forward: {enabled: true, listen: "127.0.0.1:8788"}}
+```
+
+`HTTPS_PROXY=http://127.0.0.1:8788` sends any client's HTTPS through leeward. A tunnel is opaque, so this mode owns the deadline, classifies DNS and connect failures and remembers them per host, and answers a failed tunnel with the outcome as JSON. It cannot cache, and it says so once per endpoint per run.
 
 **MCP servers over HTTP.** Each configured server gets its own path, with the same tool names.
 
@@ -183,17 +193,19 @@ make dist       # build the sdist and wheel, then install and run the wheel in a
 
 ## Status
 
-v0.1 is `leeward wrap` for stdio MCP servers and `leeward serve` for MCP servers over HTTP and for HTTP tools, on top of the classifier, breakers, run budgets, deadlines, the cache and its freshness rules, notes and outcomes, the event log, and `/leeward/status` and `/leeward/forecast`. It is tested on Linux and macOS with Python 3.11 and 3.13. Windows is untested.
+`leeward wrap` fronts a stdio MCP server, `leeward serve` runs MCP servers over HTTP and HTTP tools on one port and a CONNECT proxy on another, and `report`, `doctor`, `cache`, `chaos`, `classify` and `events` read and prod local state. Underneath: the classifier, breakers, run budgets, deadlines, the cache and its freshness rules, notes and outcomes, the event log, and `/leeward/status` and `/leeward/forecast`. Tested on Linux, macOS and Windows with Python 3.11 and 3.13.
 
 Not built yet:
 
-- A forward proxy for everything else over HTTPS. A tunnel cannot see inside TLS, so that mode could classify failures but never cache.
 - An OpenAI compatible endpoint for model calls, with failover between tiers.
 - A warmer that fills the cache before an outage.
-- `report` and `doctor`, and commands to inspect the cache and inject faults. Fault injection exists, for the tests.
-- Noticing that a tool kept its name but changed its schema.
-- Run identity for clients on the stateless 2026-07-28 revision of MCP. Over HTTP, every call from such a client shares one run. Over stdio, leeward treats a process as a run, which holds for clients that start one per session and not for one that reuses a process across conversations.
 - A recording of an agent run with and without leeward.
+
+Known limits:
+
+- A CONNECT tunnel is opaque, so mode C classifies failures and owns deadlines but can never cache. leeward says so once per endpoint per run rather than on every call.
+- A tool that keeps its name and changes its arguments is noticed and logged, and the client is asked for a fresh listing, but leeward cannot rewrite a call the agent already built.
+- Run identity on the stateless 2026-07-28 revision of MCP comes from the caller: `_meta` under `io.github.mithrilbytes.leeward/run`, or an `X-Leeward-Run` header. Without either, everything on one connection shares a run, and for `leeward wrap` that means one process.
 
 ## License
 
