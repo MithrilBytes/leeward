@@ -16,6 +16,7 @@ from typing import Any
 
 import anyio
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 Asked = tuple[str, dict[str, Any]]
 
@@ -77,6 +78,17 @@ def build_server(name: str = "notes", journal: Journal | None = None) -> tuple[M
         return "blackout\nbrownout\nfailover"
 
     return server, kept
+
+
+def missing(server: MCPServer) -> None:
+    """Add a tool that reports a thing that is not there, as a file server does."""
+
+    @server.tool()
+    def read_note(path: str) -> str:
+        """Read one note by path."""
+        # Reported the way a real file server reports it: an error result carrying the
+        # reason, rather than a crash the framework turns into "error executing tool".
+        raise ToolError(f"ENOENT: no such file or directory, open '{path}'")
 
 
 def vanish(server: MCPServer, tool: str = "threat_intel_lookup") -> None:

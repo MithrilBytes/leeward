@@ -270,7 +270,11 @@ class ServerFront(MCPServer):
         policy = resolve(proxy.config, target)
         run = self._run_of(context)
         ledger = proxy.runs.ledger(run, now)
-        key = tool_key(self.upstream.name, name, asked) if policy.cacheable else None
+        # One call's identity, whether or not its result may be kept. A failure about
+        # this call, such as a file that is not there, is remembered against these
+        # arguments; only a cacheable tool also gets its answer stored under them.
+        identity = tool_key(self.upstream.name, name, asked)
+        key = identity if policy.cacheable else None
         entry = proxy.cache.get(key, now) if key else None
         allowance = policy.stale_allowance()
 
@@ -282,7 +286,7 @@ class ServerFront(MCPServer):
             Call("TOOL", f"mcp://{self.upstream.name}/{name}"),
             policy,
             ledger,
-            request_key=key,
+            request_key=identity,
             caller=ToolCaller(self.upstream, name, asked, on_refresh=self._gone),
         )
         after = proxy.clock()

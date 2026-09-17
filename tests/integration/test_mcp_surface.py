@@ -17,7 +17,7 @@ from typing import Any, cast
 
 import pytest
 import uvicorn
-from fakes.mcp_server import Journal, build_server, redefine, vanish
+from fakes.mcp_server import Journal, build_server, missing, redefine, vanish
 from mcp.client.client import Client
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel.server import Server
@@ -384,3 +384,47 @@ async def test_a_tool_that_keeps_its_name_and_changes_its_arguments_is_noticed(
     ]
     assert len(drift) == 1
     assert "incident_notes" in str(drift[0]["message"])
+
+
+async def test_a_thing_the_server_says_is_not_there_is_not_retried(
+    front: tuple[ServerFront, Proxy, Journal], upstream: tuple[MCPServer, Journal]
+) -> None:
+    fronted, proxy, _journal = front
+    server, _other = upstream
+    missing(server)
+    async with Client(fronted) as client:
+        await client.list_tools()
+        absent = await client.call_tool("read_note", {"path": "/notes/gone.md"})
+        after = await client.call_tool("read_note", {"path": "/notes/other.md"})
+
+    outcome = leeward_field(absent)
+    assert outcome["failure"]["class"] == "NOT_FOUND"
+    assert outcome["failure"]["attempts"] == 1
+    assert outcome["advice"] == "DO_NOT_RETRY"
+    assert_valid("outcome", outcome)
+
+    # The request failed, not the tool, so the next call still reaches the server.
+    assert leeward_field(after)["failure"]["class"] == "NOT_FOUND"
+    assert proxy.breakers.get("endpoint", "notes/read_note").state is BreakerState.CLOSED
+
+
+async def test_a_missing_thing_is_remembered_per_call_not_per_tool(tmp_path: Path) -> None:
+    """The same tool, two different arguments: the first failing must not refuse the second."""
+    uncached = CONFIG.replace("    pure: true\n", "")
+    loaded = parse_config(uncached.format(data=tmp_path / "data"), tmp_path / "leeward.yaml")
+    proxy = Proxy(loaded)
+    server, _journal = build_server()
+    missing(server)
+    fronted = Upstream("notes", loaded.config.surfaces.mcp.servers["notes"], server=server)
+    front = ServerFront(proxy, fronted)
+    async with Client(front) as client:
+        await client.list_tools()
+        first = await client.call_tool("read_note", {"path": "/notes/gone.md"})
+        second = await client.call_tool("read_note", {"path": "/notes/other.md"})
+        working = await client.call_tool("incident_notes", {"query": "blackout"})
+    await fronted.aclose()
+    await proxy.aclose()
+
+    assert leeward_field(first)["failure"]["class"] == "NOT_FOUND"
+    assert leeward_field(second)["failure"]["class"] == "NOT_FOUND"
+    assert not working.is_error
