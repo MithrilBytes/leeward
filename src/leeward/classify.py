@@ -64,6 +64,9 @@ QUOTA_CODES = frozenset(
 
 _GO_DURATION = re.compile(r"([0-9]+(?:\.[0-9]+)?)(ms|h|m|s)")
 _GO_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+_MISSING_TARGET = re.compile(
+    r"\bENOENT\b|no such file or directory|does not exist|\bnot found\b", re.IGNORECASE
+)
 _INVALID_ARGUMENTS = re.compile(
     r"invalid (?:tool )?(?:arguments|parameters|params|input)"
     r"|input validation error"
@@ -140,6 +143,8 @@ class ToolError:
     code: int
     message: str
     listed_before: bool
+    in_band: bool = False
+    """The server put the error in the result, so its text is the only evidence."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,6 +495,16 @@ def _wedged(deadline_s: float, snapshot: RunSnapshot, *, injected: bool = False)
     )
 
 
+def missing_target(message: str) -> bool:
+    """Whether a server is saying the thing the call asked for does not exist.
+
+    A file that is not there will not be there on a retry. Only consulted for an
+    error result, so a search tool reporting no matches in a successful answer is
+    never read this way.
+    """
+    return _MISSING_TARGET.search(message) is not None
+
+
 def invalid_arguments(message: str) -> bool:
     """Whether a server is saying the call's arguments do not fit the tool.
 
@@ -511,6 +526,10 @@ def _tool_error(
     mapped = _mapped(policy, snapshot, codes={str(evidence.code)})
     if mapped is not None:
         return mapped
+    if evidence.in_band:
+        in_band = _in_band(evidence)
+        if in_band is not None:
+            return in_band
     code = evidence.code
     if code == JSONRPC_INVALID_PARAMS and unknown_tool(evidence.message):
         if evidence.listed_before:
@@ -553,6 +572,30 @@ def _tool_error(
     return Classification(
         FailureClass.SERVER_ERROR, Disposition.UNKNOWN, FailureScope.REQUEST, f"JSON-RPC {code}"
     )
+
+
+def _in_band(evidence: ToolError) -> Classification | None:
+    """What an error the server wrote into the result says, when the text is all there is.
+
+    Both of these are scoped to the request: the arguments were wrong, or the thing
+    asked for is not there. Neither says anything about the tool itself, so neither
+    should stop the next call to it.
+    """
+    if invalid_arguments(evidence.message):
+        return Classification(
+            FailureClass.INVALID_REQUEST,
+            Disposition.NEVER,
+            FailureScope.REQUEST,
+            "the server refused the arguments",
+        )
+    if missing_target(evidence.message):
+        return Classification(
+            FailureClass.NOT_FOUND,
+            Disposition.NEVER,
+            FailureScope.REQUEST,
+            "the server says what was asked for does not exist",
+        )
+    return None
 
 
 def _injected(evidence: Injected, policy: ResolvedPolicy, snapshot: RunSnapshot) -> Classification:

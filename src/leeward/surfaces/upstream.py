@@ -31,7 +31,6 @@ from leeward.classify import (
     Response,
     ToolAbsent,
     ToolError,
-    invalid_arguments,
     unknown_tool,
 )
 from leeward.config import HttpServer, StdioServer
@@ -300,13 +299,15 @@ class ToolCaller:
         tools/list before it is believed.
         """
         message = describe(result) or "the tool reported an error"
-        if invalid_arguments(message) and not unknown_tool(message):
-            return self._failed(
-                ToolError(code=JSONRPC_INVALID_PARAMS, message=message, listed_before=True), started
-            )
         if not unknown_tool(message):
             return self._failed(
-                ToolError(code=JSONRPC_INTERNAL_ERROR, message=message, listed_before=True), started
+                ToolError(
+                    code=JSONRPC_INTERNAL_ERROR,
+                    message=message,
+                    listed_before=True,
+                    in_band=True,
+                ),
+                started,
             )
         listed = await self.upstream.still_listed(self.tool)
         if self.on_refresh is not None and self.upstream.gone:
