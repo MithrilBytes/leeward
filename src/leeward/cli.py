@@ -1,15 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """The leeward command line.
 
-Every command takes --json. The commands that only read local state (classify and
-events here, and status, forecast and report once the proxy has state to show)
-open no network connection, so they still answer during the outage they describe.
+Every command that reports takes --json. The commands that only read local state
+(classify and events here, and status, forecast and report once the proxy has state
+to show) open no network connection, so they still answer during the outage they
+describe. serve and wrap run until they are stopped and write only to stderr, which
+for wrap is not a courtesy: its stdout is the MCP stream.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import datetime
 import json
+import os
 import re
 import sys
 from collections.abc import Mapping
@@ -22,7 +27,14 @@ from rich.console import Console
 from rich.table import Table
 
 from leeward import __version__
-from leeward.config import ConfigError, LoadedConfig, load_config, parse_config
+from leeward.config import (
+    NAME,
+    Config,
+    ConfigError,
+    LoadedConfig,
+    load_config,
+    parse_config,
+)
 from leeward.events import follow, read_events, run_id
 from leeward.policy import CallTarget, resolve
 from leeward.units import parse_duration
@@ -232,6 +244,85 @@ def events(
                 _out.print(_summary(event), markup=False)
     except KeyboardInterrupt:
         raise typer.Exit(0) from None
+
+
+@app.command()
+def serve(config_path: ConfigOption = None) -> None:
+    """Run the proxy on the address in leeward.yaml until it is stopped."""
+    # Imported here rather than at the top, where it would double the start time of
+    # every other command.
+    from leeward.policy import policy_warnings
+    from leeward.serve import listen_address, run
+
+    loaded = _load(config_path)
+    surfaces = loaded.config.surfaces
+    host, port = listen_address(loaded)
+    _err.print(f"leeward {__version__} listening on http://{host}:{port}", markup=False)
+    if not any(surface.enabled for surface in (surfaces.mcp, surfaces.fetch, surfaces.llm)):
+        _err.print(
+            "no surface is enabled, so only /leeward/status and /leeward/forecast answer",
+            markup=False,
+        )
+    for warning in policy_warnings(loaded.config):
+        _err.print(f"warning: {warning}", markup=False)
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(run(loaded))
+
+
+@app.command(context_settings={"allow_interspersed_args": False})
+def wrap(
+    command: Annotated[
+        list[str],
+        typer.Argument(
+            help="The server's command line. Put -- before it when it has flags of its own.",
+            metavar="COMMAND...",
+            show_default=False,
+        ),
+    ],
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            "-n",
+            help="The server's name in events and rules (default: from the command).",
+        ),
+    ] = None,
+    cache: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--cache",
+            help="Keep this tool's results and answer from them when the server fails."
+            " Only for tools that are safe to call twice. Repeatable.",
+        ),
+    ] = None,
+    data_dir: Annotated[
+        Path | None,
+        typer.Option("--data-dir", help="Where the cache and event log live (default ~/.leeward)."),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--config", "-c", help="A leeward.yaml for defaults and rules; read only if named."
+        ),
+    ] = None,
+) -> None:
+    """Front one stdio MCP server: put `leeward wrap --` before the command that starts it."""
+    from leeward.wrap import cache_warnings, run, server_name, wrap_config
+
+    if name is not None and not NAME.match(name):
+        raise _fail(f"--name {name!r}: use letters, digits, '.', '_' and '-'")
+    server = name or server_name(command)
+    base = _load(config_path) if config_path is not None else LoadedConfig(Config(), None)
+    loaded = wrap_config(base, server, cache or [], data_dir)
+    for warning in cache_warnings(loaded, server, cache or []):
+        _err.print(f"leeward: {warning}", markup=False)
+    loop = asyncio.new_event_loop()
+    with contextlib.suppress(KeyboardInterrupt):
+        if loop.run_until_complete(run(loaded, server, command)):
+            # Stopped by a signal, with the cleanup done. Closing the loop would wait
+            # on the thread still blocked reading stdin.
+            os._exit(0)
+    loop.close()
 
 
 def main() -> None:

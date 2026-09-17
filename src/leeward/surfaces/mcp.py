@@ -10,8 +10,8 @@ A result that came from the cache carries a note block ahead of the content and 
 outcome in `structuredContent.leeward`, so the model reading the text and the
 program reading the structure are told the same thing.
 
-Only `tools/call` is treated this way. Everything else an MCP client asks for is
-answered by the upstream server as usual.
+Only `tools/call` is treated this way. Prompts and resources are passed to the
+upstream server and its answers come back unchanged.
 """
 
 from __future__ import annotations
@@ -19,8 +19,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
+from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import MCPServer
-from mcp_types import CallToolResult, TextContent, Tool
+from mcp_types import (
+    CallToolResult,
+    GetPromptRequestParams,
+    GetPromptResult,
+    ListPromptsResult,
+    ListResourcesResult,
+    ListResourceTemplatesResult,
+    PaginatedRequestParams,
+    ReadResourceRequestParams,
+    ReadResourceResult,
+    TextContent,
+    Tool,
+)
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
@@ -81,10 +94,55 @@ def stored_result(body: bytes) -> CallToolResult:
 class ServerFront(MCPServer):
     """leeward's view of one upstream server: the same tools, different failures."""
 
-    def __init__(self, proxy: Proxy, upstream: Upstream) -> None:
+    def __init__(self, proxy: Proxy, upstream: Upstream, *, connection: str | None = None) -> None:
         super().__init__(name=f"leeward-{upstream.name}")
         self.proxy = proxy
         self.upstream = upstream
+        self.connection = connection or f"mcp:{upstream.name}"
+
+    # Prompts and resources go through the SDK's request handlers rather than the
+    # public list_prompts and read_resource hooks, which rebuild each result from
+    # parts: that would lose the upstream's page cursors and the URI of every part
+    # of a multi-part read.
+
+    async def _handle_list_prompts(
+        self, ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
+    ) -> ListPromptsResult:
+        client = await self.upstream.client()
+        if client.server_capabilities.prompts is None:
+            return ListPromptsResult(prompts=[])
+        cursor = params.cursor if params is not None else None
+        return await client.list_prompts(cursor=cursor, cache_mode="bypass")
+
+    async def _handle_get_prompt(
+        self, ctx: ServerRequestContext[Any], params: GetPromptRequestParams
+    ) -> GetPromptResult:
+        client = await self.upstream.client()
+        return await client.get_prompt(params.name, params.arguments)
+
+    async def _handle_list_resources(
+        self, ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
+    ) -> ListResourcesResult:
+        client = await self.upstream.client()
+        if client.server_capabilities.resources is None:
+            return ListResourcesResult(resources=[])
+        cursor = params.cursor if params is not None else None
+        return await client.list_resources(cursor=cursor, cache_mode="bypass")
+
+    async def _handle_list_resource_templates(
+        self, ctx: ServerRequestContext[Any], params: PaginatedRequestParams | None
+    ) -> ListResourceTemplatesResult:
+        client = await self.upstream.client()
+        if client.server_capabilities.resources is None:
+            return ListResourceTemplatesResult(resource_templates=[])
+        cursor = params.cursor if params is not None else None
+        return await client.list_resource_templates(cursor=cursor, cache_mode="bypass")
+
+    async def _handle_read_resource(
+        self, ctx: ServerRequestContext[Any], params: ReadResourceRequestParams
+    ) -> ReadResourceResult:
+        client = await self.upstream.client()
+        return await client.read_resource(str(params.uri), cache_mode="bypass")
 
     @property
     def _accepts_stale_argument(self) -> bool:
@@ -245,11 +303,11 @@ class ServerFront(MCPServer):
         return with_outcome(stored_result(body), outcome)
 
     def _run_of(self, context: object) -> RunRef:
-        """Run identity from the session when the transport gives one, else the server."""
+        """Run identity from the session when the transport gives one, else the connection."""
         session = getattr(context, "session_id", None)
         return resolve_run(
             mcp_session=session if isinstance(session, str) else None,
-            connection=f"mcp:{self.upstream.name}",
+            connection=self.connection,
         )
 
 
