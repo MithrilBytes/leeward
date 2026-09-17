@@ -537,6 +537,59 @@ def _through_leeward(entry: object) -> bool:
     return isinstance(command, str) and Path(command).name == "leeward" and first == "wrap"
 
 
+@app.command()
+def warm(
+    corpora: Annotated[
+        list[str] | None, typer.Argument(help="Corpora to warm. Omit for all of them.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Say what would be fetched, and fetch nothing.")
+    ] = False,
+    config_path: ConfigOption = None,
+    json_output: JsonOption = False,
+) -> None:
+    """Fill the cache from the configured corpora, before anything needs it."""
+    from leeward.proxy import Proxy
+    from leeward.warm import warm_all
+
+    loaded = _load(config_path)
+    if not loaded.config.corpora:
+        raise _fail("no corpora are configured; see corpora in leeward.example.yaml")
+
+    async def go() -> list[dict[str, object]]:
+        proxy = Proxy(loaded)
+        try:
+            results = await warm_all(proxy, corpora or (), dry_run=dry_run)
+        finally:
+            await proxy.aclose()
+        return [result.as_dict() for result in results]
+
+    try:
+        done = asyncio.run(go())
+    except KeyError as exc:
+        raise _fail(f"no such corpus: {exc.args[0]}") from exc
+    if json_output:
+        _print_json(done)
+        return
+    for result in done:
+        verb = "would fetch" if dry_run else "fetched"
+        line = (
+            f"{result['corpus']}: {verb} {result['fetched']}, "
+            f"{result['already_fresh']} already fresh, {result['failed']} failed"
+        )
+        if isinstance(result["bytes"], int) and result["bytes"]:
+            line += f", {human_bytes(result['bytes'])}"
+        if result["stopped_at_cap"]:
+            line += ", stopped at the byte cap"
+        _out.print(line, markup=False)
+        if result["robots_skipped"] and not result["unsupported"]:
+            _out.print("  robots.txt was not consulted for a list you wrote", markup=False)
+        if result["unsupported"]:
+            _out.print(f"  {result['unsupported']} corpora are not implemented", markup=False)
+        for failure in cast("list[Mapping[str, str]]", result["failures"])[:5]:
+            _out.print(f"  {failure['reason']}: {failure['url']}", markup=False)
+
+
 cache_app = typer.Typer(no_args_is_help=True, help="Inspect what leeward has stored.")
 chaos_app = typer.Typer(no_args_is_help=True, help="Arm and lift faults, to prove what happens.")
 app.add_typer(cache_app, name="cache")
