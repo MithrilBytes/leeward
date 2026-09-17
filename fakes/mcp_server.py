@@ -25,9 +25,15 @@ class Journal:
 
     calls: list[Asked] = field(default_factory=list["Asked"])
     notes_fail_after: int | None = None
+    lookup_vanishes_after: int | None = None
+    sink: Path | None = None
+    """A file that gets a line per call, for a caller in another process."""
 
     def record(self, tool: str, arguments: dict[str, Any]) -> int:
         self.calls.append((tool, arguments))
+        if self.sink is not None:
+            with self.sink.open("a", encoding="utf-8") as lines:
+                lines.write(f"{tool}\n")
         return sum(1 for name, _arguments in self.calls if name == tool)
 
     def hits(self, tool: str) -> int:
@@ -51,7 +57,9 @@ def build_server(name: str = "notes", journal: Journal | None = None) -> tuple[M
     @server.tool()
     def threat_intel_lookup(ioc: str) -> str:
         """Look up an indicator of compromise."""
-        kept.record("threat_intel_lookup", {"ioc": ioc})
+        seen = kept.record("threat_intel_lookup", {"ioc": ioc})
+        if kept.lookup_vanishes_after is not None and seen >= kept.lookup_vanishes_after:
+            vanish(server)
         return f"no intelligence on record for {ioc}"
 
     @server.prompt()
@@ -73,15 +81,22 @@ def vanish(server: MCPServer, tool: str = "threat_intel_lookup") -> None:
 
 
 def main() -> None:
-    """Run over stdio, which is how the demo's agent reaches it.
+    """Run over stdio, which is how the demo reaches it.
 
-    With LEEWARD_FAKE_PID_FILE set, the process id is written there first, so a test
-    talking to this server through a wrapper can still kill it.
+    A caller in another process sets what it needs through the environment:
+    LEEWARD_FAKE_PID_FILE gets the process id, so the server can be killed through a
+    wrapper; LEEWARD_FAKE_JOURNAL gets a line per tool call; and
+    LEEWARD_FAKE_VANISH_AFTER takes threat_intel_lookup away after that many calls.
     """
     pid_file = os.environ.get("LEEWARD_FAKE_PID_FILE")
     if pid_file:
         Path(pid_file).write_text(str(os.getpid()), encoding="utf-8")
-    server, _journal = build_server()
+    journal = Journal()
+    if sink := os.environ.get("LEEWARD_FAKE_JOURNAL"):
+        journal.sink = Path(sink)
+    if after := os.environ.get("LEEWARD_FAKE_VANISH_AFTER"):
+        journal.lookup_vanishes_after = int(after)
+    server, _journal = build_server(journal=journal)
     server.run(transport="stdio")
 
 
