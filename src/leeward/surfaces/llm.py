@@ -45,6 +45,15 @@ from leeward.vocab import Advice, Outcome, Surface, Volatility
 RUN_HEADER = "x-leeward-run"
 SHOW_INJECTION_HEADER = "x-leeward-show-injection"
 CHAT_PATH = "/v1/chat/completions"
+"""Where clients call leeward, matching what they would call on a provider."""
+
+UPSTREAM_PATH = "/chat/completions"
+"""What leeward appends to a tier's base URL.
+
+By convention a base URL already ends in the version, `https://api.openai.com/v1`, and
+the client adds the rest. Appending the whole path instead produces `/v1/v1/chat/...`,
+which every provider answers with a 404 and no explanation worth reading.
+"""
 MAX_BODY_BYTES = 8 * 1024 * 1024
 
 ERROR_TYPES: Mapping[Advice, str] = {
@@ -89,7 +98,7 @@ def error_body(outcome: CallOutcome, tier: str | None) -> dict[str, object]:
 
 
 def _endpoint(tier: Tier) -> str:
-    return f"{tier.base_url.rstrip('/')}{CHAT_PATH}"
+    return f"{tier.base_url.rstrip('/')}{UPSTREAM_PATH}"
 
 
 def _headers(tier: Tier, request: Request) -> tuple[tuple[str, str], ...]:
