@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "build>=1.2",
     "hypothesis>=6.100",
     "jsonschema>=4.22",
     "pyright>=1.1.380",
@@ -48,6 +49,26 @@ path = "src/leeward/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/leeward"]
+
+[tool.hatch.build.targets.sdist]
+# An allowlist. By default hatchling takes every file that .gitignore does not
+# exclude, and a working tree can hold files that were never part of the project.
+# make dist also fails if either artifact carries a file git does not track.
+# https://hatch.pypa.io/latest/config/build/#vcs
+# https://hatch.pypa.io/latest/config/build/#explicit-selection
+only-include = [
+    "LICENSE",
+    "Makefile",
+    "NOTICE",
+    "README.md",
+    "constraints.txt",
+    "fakes",
+    "leeward.example.yaml",
+    "schemas",
+    "scripts",
+    "src",
+    "tests",
+]
 
 [tool.ruff]
 line-length = 100
