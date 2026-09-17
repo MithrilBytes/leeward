@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import anyio
 from mcp.server.mcpserver import MCPServer
 
 Asked = tuple[str, dict[str, Any]]
@@ -25,6 +26,7 @@ class Journal:
 
     calls: list[Asked] = field(default_factory=list["Asked"])
     notes_fail_after: int | None = None
+    notes_hang: bool = False
     lookup_vanishes_after: int | None = None
     sink: Path | None = None
     """A file that gets a line per call, for a caller in another process."""
@@ -47,9 +49,11 @@ def build_server(name: str = "notes", journal: Journal | None = None) -> tuple[M
     server = MCPServer(name=name)
 
     @server.tool()
-    def incident_notes(query: str) -> str:
+    async def incident_notes(query: str) -> str:
         """Search the incident notes for a query."""
         seen = kept.record("incident_notes", {"query": query})
+        if kept.notes_hang:
+            await anyio.sleep_forever()
         if kept.notes_fail_after is not None and seen > kept.notes_fail_after:
             raise RuntimeError("the document store is not answering")
         return f"3 incident notes mention {query}"
@@ -85,8 +89,9 @@ def main() -> None:
 
     A caller in another process sets what it needs through the environment:
     LEEWARD_FAKE_PID_FILE gets the process id, so the server can be killed through a
-    wrapper; LEEWARD_FAKE_JOURNAL gets a line per tool call; and
-    LEEWARD_FAKE_VANISH_AFTER takes threat_intel_lookup away after that many calls.
+    wrapper; LEEWARD_FAKE_JOURNAL gets a line per tool call;
+    LEEWARD_FAKE_VANISH_AFTER takes threat_intel_lookup away after that many calls; and
+    LEEWARD_FAKE_HANG makes incident_notes accept a call and never answer it.
     """
     pid_file = os.environ.get("LEEWARD_FAKE_PID_FILE")
     if pid_file:
@@ -96,6 +101,7 @@ def main() -> None:
         journal.sink = Path(sink)
     if after := os.environ.get("LEEWARD_FAKE_VANISH_AFTER"):
         journal.lookup_vanishes_after = int(after)
+    journal.notes_hang = bool(os.environ.get("LEEWARD_FAKE_HANG"))
     server, _journal = build_server(journal=journal)
     server.run(transport="stdio")
 
