@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -17,7 +19,7 @@ from leeward.notes import (
     status_line,
 )
 from leeward.templates import TEMPLATE_NAMES, template_set_sha256, template_texts
-from leeward.vocab import Disposition, FailureClass, Outcome, Volatility, WithheldReason
+from leeward.vocab import Advice, Disposition, FailureClass, Outcome, Volatility, WithheldReason
 
 
 def facts(**extra: object) -> NoteFacts:
@@ -64,6 +66,49 @@ def test_a_stale_note_gives_the_age_the_reason_and_what_to_expect() -> None:
     assert "very likely still accurate" in note
     assert "Retrying will not help until connectivity returns." in note
     assert len(note) <= NOTE_LIMIT
+
+
+def test_a_tool_that_hangs_once_is_not_told_that_retrying_will_not_help() -> None:
+    first = facts(
+        volatility=Volatility.VOLATILE,
+        failure_class=FailureClass.WEDGED,
+        disposition=Disposition.TRANSIENT,
+        attempts=1,
+        host_or_tool="notes/incident_notes",
+        tool_name="incident_notes",
+        advice=Advice.RETRY_AFTER,
+    )
+    note = compose(first)
+    assert "will not help" not in note
+    assert note.endswith("Calling again shortly may return a fresh copy.")
+    waited = compose(replace(first, retry_after_s=5.0))
+    assert waited.endswith("It may succeed if called again in 5s.")
+
+
+def test_a_tool_that_hangs_again_is_refused_without_talk_of_connectivity() -> None:
+    note = compose(
+        facts(
+            volatility=Volatility.VOLATILE,
+            failure_class=FailureClass.WEDGED,
+            attempts=1,
+            host_or_tool="notes/incident_notes",
+            tool_name="incident_notes",
+            advice=Advice.DO_NOT_RETRY,
+        )
+    )
+    assert note.endswith("Retrying will not help.")
+    assert "connectivity" not in note
+
+
+def test_a_host_that_refuses_connections_still_says_to_wait_for_connectivity() -> None:
+    note = compose(
+        facts(
+            volatility=Volatility.VOLATILE,
+            failure_class=FailureClass.CONNECT_REFUSED,
+            advice=Advice.DO_NOT_RETRY,
+        )
+    )
+    assert note.endswith("Retrying will not help until connectivity returns.")
 
 
 def test_a_stale_note_while_revalidating_does_not_claim_anything_is_broken() -> None:

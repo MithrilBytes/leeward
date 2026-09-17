@@ -261,6 +261,7 @@ def build(
             server_name=_server_name(policy),
             soft_deadline_s=policy.soft_deadline_s,
             clock_is_wrong=clock_is_wrong,
+            advice=advice,
         )
     )
     return CallOutcome(

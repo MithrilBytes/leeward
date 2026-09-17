@@ -25,7 +25,7 @@ from functools import cache
 from leeward.cache.freshness import StaleReason
 from leeward.templates import template_texts
 from leeward.units import human_duration
-from leeward.vocab import Disposition, FailureClass, Outcome, Volatility, WithheldReason
+from leeward.vocab import Advice, Disposition, FailureClass, Outcome, Volatility, WithheldReason
 
 NOTE_LIMIT = 400
 """Every note fits in this many characters. The detail lives in the structured field."""
@@ -103,6 +103,8 @@ class NoteFacts:
     server_name: str | None = None
     soft_deadline_s: float | None = None
     clock_is_wrong: bool = False
+    advice: Advice | None = None
+    """The advice beside the note, which the note must not contradict."""
 
 
 CONNECTIVITY_CLASSES = frozenset(
@@ -137,8 +139,15 @@ def _retry_clause(facts: NoteFacts) -> str:
         return clause("retry.after", {"retry_after_human": human_duration(facts.retry_after_s)})
     if facts.failure_class in (FailureClass.TOOL_GONE, FailureClass.BUDGET_EXHAUSTED):
         return clause("retry.never_run")
-    if facts.failure_class in CONNECTIVITY_CLASSES:
-        # Whatever the disposition says about later, nothing gets through now.
+    if facts.advice is Advice.RETRY_AFTER:
+        # The advice says another try is worth making, so the note says when rather
+        # than contradict it. A first hang of a call that is not hedged lands here.
+        if facts.retry_after_s:
+            return clause("retry.after", {"retry_after_human": human_duration(facts.retry_after_s)})
+        return clause("retry.shortly")
+    if facts.failure_class in CONNECTIVITY_CLASSES and facts.tool_name is None:
+        # Whatever the disposition says about later, nothing gets through now. A tool
+        # has no connectivity of its own to wait for, so it gets the plain clauses.
         return clause("retry.connectivity")
     if facts.disposition is Disposition.NEVER:
         return clause("retry.never")
