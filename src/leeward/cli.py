@@ -319,8 +319,11 @@ def wrap(
     loop = asyncio.new_event_loop()
     with contextlib.suppress(KeyboardInterrupt):
         if loop.run_until_complete(run(loaded, server, command)):
-            # Stopped by a signal, with the cleanup done. Closing the loop would wait
-            # on the thread still blocked reading stdin.
+            # Stopped by a signal, with the cleanup done. Closing the loop would wait on
+            # the worker thread still blocked reading stdin, since shutting a loop down
+            # waits on its default executor.
+            # https://anyio.readthedocs.io/en/stable/fileio.html
+            # https://docs.python.org/3/library/asyncio-runner.html#asyncio.Runner.close
             os._exit(0)
     loop.close()
 

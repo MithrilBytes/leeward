@@ -99,10 +99,14 @@ def cache_warnings(loaded: LoadedConfig, name: str, cached: Sequence[str]) -> li
 async def run(loaded: LoadedConfig, name: str, command: Sequence[str]) -> bool:
     """Serve the wrapped server over stdio until the client closes the stream or a signal.
 
-    Returns whether a signal ended it. The SDK reads stdin on a worker thread that a
-    signal cannot interrupt, and shutting an event loop down waits for that thread, so
-    after a signal the caller should end the process rather than close the loop. By
-    then the wrapped server has been stopped and the cache and event log closed.
+    Returns whether a signal ended it. The SDK reads stdin through anyio's file
+    wrapper, which blocks a worker thread; a signal handler runs on the main thread and
+    does not unblock it, and shutting an event loop down waits for that thread. So after
+    a signal the caller should end the process rather than close the loop. By then the
+    wrapped server has been stopped and the cache and event log closed.
+    https://anyio.readthedocs.io/en/stable/fileio.html
+    https://docs.python.org/3/library/signal.html#signals-and-threads
+    https://docs.python.org/3/library/asyncio-runner.html#asyncio.Runner.close
     """
     proxy = Proxy(loaded)
     upstream = Upstream(name, StdioServer(transport="stdio", command=list(command), env_from=["*"]))
