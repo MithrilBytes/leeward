@@ -28,10 +28,14 @@ jobs:
       # A failure on one platform says nothing about the others, so each runs to the end.
       fail-fast: false
       matrix:
-        # macos-26 is the arm64 image. Windows runs the same make targets; the
-        # Makefile knows where a virtual environment puts its programs there.
+        # macos-26 is the arm64 image.
         # https://github.com/actions/runner-images#available-images
-        os: [ubuntu-24.04, macos-26, windows-2025]
+        # Windows is not here: the MCP SDK's stdio client stops a server process by
+        # sending SIGINT, which Windows rejects with "Unsupported signal: 2", so every
+        # test that starts a real stdio server fails on the way out rather than on
+        # anything leeward did. The Makefile still knows where a virtual environment
+        # puts its programs there, for anyone running the checks locally.
+        os: [ubuntu-24.04, macos-26]
         python: ["3.11", "3.13"]
     runs-on: ${{ matrix.os }}
     # The default is 360 minutes, which a hung test would spend in full.
