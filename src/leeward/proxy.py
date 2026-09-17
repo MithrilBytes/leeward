@@ -45,6 +45,7 @@ from leeward.cache.freshness import (
 )
 from leeward.cache.store import CacheStore, Evicted, SingleFlight, cache_key
 from leeward.chaos import FaultInjector
+from leeward.clock import ClockCheck
 from leeward.config import LoadedConfig
 from leeward.events import CacheInfo, EventFields, EventLog, RunRef
 from leeward.outcome import CallOutcome, build, stale_outcome_guard
@@ -184,12 +185,13 @@ class Proxy:
             clock_trust=self.clock_trust,
         )
         self.flights: SingleFlight[CallReport] = SingleFlight()
+        self.clock_check = ClockCheck(threshold_s=config.clock.skew_threshold)
         self.health: OrderedDict[str, EndpointHealth] = OrderedDict()
         self._background: set[asyncio.Task[object]] = set()
 
     def clock_trust(self) -> ClockTrust:
-        """Until something outside this machine vouches for the clock, it is unchecked."""
-        return ClockTrust.UNCHECKED
+        """What the origins that have answered think of this machine's clock."""
+        return self.clock_check.trust()
 
     async def aclose(self) -> None:
         for task in list(self._background):
@@ -306,6 +308,9 @@ class Proxy:
         if report.abandoned_at_soft:
             return self._after_soft_deadline(report, request, policy, ledger, entry, run, surface)
         fetched = report.fetched
+        if fetched is not None and policy.target.origin:
+            # Every dated answer is a second opinion about this machine's clock.
+            self.clock_check.observe(policy.target.origin, fetched.headers, now)
         if report.ok and fetched is not None:
             if fetched.status == 304 and entry is not None:
                 refreshed = self.cache.refresh(
