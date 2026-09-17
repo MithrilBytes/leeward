@@ -42,6 +42,7 @@ from leeward.config import (
     parse_config,
 )
 from leeward.events import follow, read_events, run_id
+from leeward.jsonish import mapping
 from leeward.policy import CallTarget, resolve
 from leeward.templates import template_set_sha256
 from leeward.units import human_bytes, human_duration, parse_duration
@@ -277,9 +278,11 @@ def serve(config_path: ConfigOption = None, json_output: JsonOption = False) -> 
     ]
     warnings = policy_warnings(loaded.config)
     if surfaces.llm.enabled:
+        from leeward.surfaces.llm import tier_warnings
+
         if not surfaces.llm.tiers:
             warnings.append("the model surface is enabled with no tiers, so it refuses calls")
-        warnings += _tier_warnings(loaded)
+        warnings += tier_warnings(loaded.config)
     if surfaces.forward.enabled:
         forward_host, _, forward_port = surfaces.forward.listen.rpartition(":")
         warnings.append(
@@ -506,15 +509,6 @@ def _finish(checks: list[dict[str, object]], json_output: bool) -> None:
         raise typer.Exit(1)
 
 
-def _tier_warnings(loaded: LoadedConfig) -> list[str]:
-    """Keys an operator named but has not set, read at startup rather than at 3 a.m."""
-    return [
-        f"tier {tier.name}: {tier.api_key_env} is not set in the environment"
-        for tier in loaded.config.surfaces.llm.tiers
-        if tier.api_key_env and not os.environ.get(tier.api_key_env)
-    ]
-
-
 def _newest_event(directory: Path) -> str | None:
     newest: str | None = None
     for event in read_events(directory):
@@ -535,20 +529,15 @@ def _wrapped_servers() -> list[tuple[str, list[str]]]:
             parsed = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        servers = _mapping(parsed).get("mcpServers")
-        named = [name for name, entry in _mapping(servers).items() if _through_leeward(entry)]
+        servers = mapping(parsed).get("mcpServers")
+        named = [name for name, entry in mapping(servers).items() if _through_leeward(entry)]
         if named:
             found.append((str(candidate), sorted(named)))
     return found
 
 
-def _mapping(value: object) -> Mapping[str, object]:
-    """An object read out of someone else's JSON, with its shape stated once."""
-    return cast("Mapping[str, object]", value) if isinstance(value, dict) else {}
-
-
 def _through_leeward(entry: object) -> bool:
-    spec = _mapping(entry)
+    spec = mapping(entry)
     command = spec.get("command")
     arguments = spec.get("args")
     listed = cast("list[object]", arguments) if isinstance(arguments, list) else []

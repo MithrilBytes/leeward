@@ -20,7 +20,7 @@ import asyncio
 import mimetypes
 import re
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from html.parser import HTMLParser
@@ -39,7 +39,6 @@ from leeward.config import (
     McpResourcesCorpus,
     SitemapCorpus,
     UrlListCorpus,
-    ZimCorpus,
 )
 from leeward.events import EventFields, RunRef, WarmInfo
 from leeward.policy import CallTarget, resolve
@@ -581,11 +580,3 @@ def content_type(path: Path) -> str:
         return KNOWN_TYPES[suffix]
     kind, _encoding = mimetypes.guess_type(path.name)
     return kind or "application/octet-stream"
-
-
-def unsupported_kinds(corpora: Iterable[Corpus]) -> list[str]:
-    """Corpus types configured but not implemented, so a caller can say so up front."""
-    kinds = {ZimCorpus: "zim"}
-    return sorted(
-        {name for corpus in corpora for kind, name in kinds.items() if isinstance(corpus, kind)}
-    )

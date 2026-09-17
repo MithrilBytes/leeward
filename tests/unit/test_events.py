@@ -169,3 +169,30 @@ def test_following_yields_only_events_appended_after_it_starts(tmp_path: Path) -
 
     stream = follow(tmp_path, poll_s=0, stop=lambda: len(polls) >= 2, sleep=sleep)
     assert [event["message"] for event in stream] == ["after"]
+
+
+def test_the_log_drops_days_older_than_the_window_as_it_rolls_over(tmp_path: Path) -> None:
+    """A record nobody deletes is a disk that fills, so rotation prunes as it goes."""
+    directory = tmp_path / "events"
+    directory.mkdir()
+    for day in ("2026-08-01", "2026-09-01", "2026-09-10", "2026-09-16"):
+        (directory / f"{day}.jsonl").write_text('{"event": "call"}\n', encoding="utf-8")
+
+    moment = datetime.datetime(2026, 9, 17, 12, 0, tzinfo=datetime.UTC).timestamp()
+    log = EventLog(directory, frozenset(), keep_days=14, clock=lambda: moment)
+    log.emit("startup", RunRef.internal("test"))
+    log.close()
+
+    kept = sorted(path.stem for path in directory.glob("*.jsonl"))
+    # Fourteen days back from the 17th is the 3rd, so August and the 1st are gone.
+    assert kept == ["2026-09-10", "2026-09-16", "2026-09-17"]
+
+
+def test_pruning_never_removes_the_file_being_written(tmp_path: Path) -> None:
+    directory = tmp_path / "events"
+    moment = datetime.datetime(2026, 9, 17, 12, 0, tzinfo=datetime.UTC).timestamp()
+    log = EventLog(directory, frozenset(), keep_days=1, clock=lambda: moment)
+    log.emit("startup", RunRef.internal("test"))
+    assert log.prune(moment + 10 * 86_400) == []
+    log.close()
+    assert (directory / "2026-09-17.jsonl").exists()

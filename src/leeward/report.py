@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from leeward.jsonish import mapping, text
 from leeward.vocab import Outcome
 
 CALL = "call"
@@ -24,15 +25,6 @@ def _int(value: object) -> int:
 
 def _float(value: object) -> float:
     return float(value) if isinstance(value, int | float) else 0.0
-
-
-def _text(value: object) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def _mapping(value: object) -> Mapping[str, object]:
-    """A nested object from the log, or nothing, with its shape stated once."""
-    return cast("Mapping[str, object]", value) if isinstance(value, dict) else {}
 
 
 def percentile(values: Sequence[float], fraction: float) -> float:
@@ -59,13 +51,13 @@ class Endpoint:
 
     def observe(self, event: Mapping[str, object]) -> None:
         self.calls += 1
-        outcome = _text(event.get("outcome")) or "UNKNOWN"
+        outcome = text(event.get("outcome")) or "UNKNOWN"
         self.outcomes[outcome] = self.outcomes.get(outcome, 0) + 1
-        failure = _text(event.get("failure_class"))
+        failure = text(event.get("failure_class"))
         if failure is not None and failure != "OK":
             self.classes[failure] = self.classes.get(failure, 0) + 1
         self.attempts += _int(event.get("attempts"))
-        self.bytes_served += _int(_mapping(event.get("cache")).get("bytes_served"))
+        self.bytes_served += _int(mapping(event.get("cache")).get("bytes_served"))
         if _int(event.get("attempts")) == 0:
             self.without_network += 1
         self.latencies_ms.append(_float(event.get("total_latency_ms")))
@@ -93,18 +85,18 @@ def summarize(events: Iterable[Mapping[str, object]]) -> dict[str, object]:
     refusals = 0
     injected = 0
     for event in events:
-        if _text(event.get("event")) != CALL:
+        if text(event.get("event")) != CALL:
             continue
-        name = _text(event.get("endpoint")) or "(unknown)"
+        name = text(event.get("endpoint")) or "(unknown)"
         endpoints.setdefault(name, Endpoint(name)).observe(event)
-        identity = _text(_mapping(event.get("run")).get("id"))
+        identity = text(mapping(event.get("run")).get("id"))
         if identity is not None:
             runs.add(identity)
-        stamp = _text(event.get("ts"))
+        stamp = text(event.get("ts"))
         if stamp is not None:
             first = stamp if first is None or stamp < first else first
             last = stamp if last is None or stamp > last else last
-        if _text(event.get("failure_class")) in ("BREAKER_OPEN", "BUDGET_EXHAUSTED"):
+        if text(event.get("failure_class")) in ("BREAKER_OPEN", "BUDGET_EXHAUSTED"):
             refusals += 1
         if event.get("injected") is True:
             injected += 1

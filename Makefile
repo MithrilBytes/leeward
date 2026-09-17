@@ -1,4 +1,4 @@
-.PHONY: install lock lock-check test lint typecheck check dist demo overhead recording clean
+.PHONY: install lock lock-check test lint typecheck check dist demo overhead recording render clean
 
 # make lock resolves on the interpreter in .venv and writes its version into the first
 # line of constraints.txt. Other supported interpreters install the same pins.
@@ -49,16 +49,23 @@ dist:
 demo:
 	$(VENV)/python -m scripts.demo --readme README.md
 
+render:
+	$(VENV)/python -m scripts.cast --in demo/leeward.cast --out demo/leeward.v2.cast
+	npx --yes svg-term-cli --in demo/leeward.v2.cast --out demo/leeward.svg \
+	  --window --width 92 --height 34
+	rm -f demo/leeward.v2.cast
+
 overhead:
 	$(VENV)/python -m scripts.overhead --readme README.md
 
-# recording needs a local model (ollama pull granite3.3:8b), asciinema and
-# npx. It runs the agent twice for real, kills its MCP server both times, and rewrites
-# the animation in the README from what happened.
+# recording needs a local model (ollama pull granite3.3:8b), asciinema and npx. It runs
+# the agent twice for real, kills its MCP server both times, and rewrites the animation in
+# the README from what happened. Re-timing and rendering need only npx, so an existing
+# recording can be slowed down or re-rendered without reinstalling anything.
 recording:
 	script -q /dev/null bash -c 'stty cols 92 rows 34 2>/dev/null; \
 	  asciinema rec demo/leeward.cast --overwrite -c "$(VENV)/python -m scripts.agent"'
-	asciinema convert --output-format asciicast-v2 demo/leeward.cast demo/leeward.v2.cast
+	$(VENV)/python -m scripts.cast --in demo/leeward.cast --out demo/leeward.v2.cast
 	npx --yes svg-term-cli --in demo/leeward.v2.cast --out demo/leeward.svg \
 	  --window --width 92 --height 34
 	rm -f demo/leeward.v2.cast

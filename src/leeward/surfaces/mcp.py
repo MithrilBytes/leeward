@@ -53,6 +53,7 @@ from leeward.cache.freshness import (
 )
 from leeward.cache.store import resource_key, tool_key
 from leeward.events import CacheInfo, RunRef
+from leeward.jsonish import mapping, text
 from leeward.outcome import CallOutcome, build
 from leeward.policy import CallTarget, ResolvedPolicy, resolve
 from leeward.proxy import Proxy
@@ -171,16 +172,9 @@ def stored_result(body: bytes) -> CallToolResult:
     return CallToolResult.model_validate_json(body)
 
 
-def _text(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _mapping(value: object) -> Mapping[str, object]:
-    """A mapping the transport handed us, read case-insensitively, or nothing."""
-    if not isinstance(value, Mapping):
-        return {}
-    items = cast("Mapping[str, object]", value)
-    return {str(key).lower(): item for key, item in items.items()}
+def _lowered(value: object) -> Mapping[str, object]:
+    """A mapping from the transport, keyed the way headers are compared."""
+    return {str(key).lower(): item for key, item in mapping(value).items()}
 
 
 class ServerFront(MCPServer):
@@ -253,12 +247,15 @@ class ServerFront(MCPServer):
         if isinstance(decision, ServeFresh | ServeStale):
             return self._resource_from_cache(uri, decision, policy, ledger, run)
 
-        report = await proxy.engine.call(
-            Call("RESOURCE", f"mcp://{self.upstream.name}/{uri}"),
-            policy,
-            ledger,
-            request_key=key,
-            caller=ResourceCaller(self.upstream, uri),
+        report, _joined = await proxy.flights.run(
+            key,
+            lambda: proxy.engine.call(
+                Call("RESOURCE", f"mcp://{self.upstream.name}/{uri}"),
+                policy,
+                ledger,
+                request_key=key,
+                caller=ResourceCaller(self.upstream, uri),
+            ),
         )
         after = proxy.clock()
         if report.ok and report.fetched is not None:
@@ -423,12 +420,17 @@ class ServerFront(MCPServer):
         if isinstance(decision, ServeFresh | ServeStale):
             return self._from_cache(name, decision, policy, ledger, run)
 
-        report = await proxy.engine.call(
-            Call("TOOL", f"mcp://{self.upstream.name}/{name}"),
-            policy,
-            ledger,
-            request_key=identity,
-            caller=ToolCaller(self.upstream, name, asked, on_refresh=self._gone),
+        # Identical calls in flight share one: a second agent asking the same question
+        # of the same tool at the same moment is one question to the server.
+        report, _joined = await proxy.flights.run(
+            identity,
+            lambda: proxy.engine.call(
+                Call("TOOL", f"mcp://{self.upstream.name}/{name}"),
+                policy,
+                ledger,
+                request_key=identity,
+                caller=ToolCaller(self.upstream, name, asked, on_refresh=self._gone),
+            ),
         )
         after = proxy.clock()
         if report.ok and report.fetched is not None:
@@ -530,8 +532,8 @@ class ServerFront(MCPServer):
         inner = getattr(context, "request_context", None) or context
         session = getattr(context, "session_id", None) or getattr(inner, "session_id", None)
         return resolve_run(
-            header=_text(_mapping(getattr(context, "headers", None)).get(RUN_HEADER)),
-            mcp_meta=_text(_mapping(getattr(inner, "meta", None)).get(RUN_META_KEY)),
+            header=text(_lowered(getattr(context, "headers", None)).get(RUN_HEADER)),
+            mcp_meta=text(_lowered(getattr(inner, "meta", None)).get(RUN_META_KEY)),
             mcp_session=session if isinstance(session, str) else None,
             connection=self.connection,
         )
