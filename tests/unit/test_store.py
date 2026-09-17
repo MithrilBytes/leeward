@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -13,6 +13,7 @@ from leeward.cache.store import (
     CacheStats,
     CacheStore,
     CorruptBodyError,
+    Evicted,
     SingleFlight,
     cache_key,
     tool_key,
@@ -233,3 +234,68 @@ async def test_a_later_call_starts_a_new_flight() -> None:
 def test_a_stored_body_is_verified_by_its_own_hash(store: CacheStore) -> None:
     stored = put(store, body=b"a body worth checking")
     assert stored.body_sha256 == hashlib.sha256(b"a body worth checking").hexdigest()
+
+
+def test_a_store_with_a_cap_evicts_as_it_writes(tmp_path: Path) -> None:
+    """The cap is the store's own business, so every surface that writes gets it."""
+    dropped: list[list[Evicted]] = []
+    body = b"x" * 200_000
+    # Look at the total after every write, rather than after the usual eight megabytes.
+    with CacheStore(
+        tmp_path / "cache",
+        max_bytes=1_000_000,
+        check_every_bytes=1,
+        on_evict=lambda items: dropped.append(list(items)),
+    ) as store:
+        for index in range(12):
+            store.put(
+                key=cache_key("GET", f"https://origin.test/page/{index}"),
+                url=f"https://origin.test/page/{index}",
+                method="GET",
+                endpoint="origin.test/page/{id}",
+                status=200,
+                headers=(),
+                body=body,
+                requested_at=float(index),
+                received_at=float(index),
+                volatility=Volatility.STATIC,
+                now=float(index),
+            )
+        stats = store.stats()
+
+    assert stats.bytes <= 1_000_000
+    assert dropped, "the store never reported what it dropped"
+    # Least recently used first, so the page written first is the page dropped first.
+    assert dropped[0][0].url == "https://origin.test/page/0"
+
+
+def test_pinned_entries_are_evicted_last_and_reported(tmp_path: Path) -> None:
+    dropped: list[Evicted] = []
+    body = b"y" * 100_000
+
+    def remember(items: Sequence[Evicted]) -> None:
+        dropped.extend(items)
+
+    with CacheStore(
+        tmp_path / "cache", max_bytes=250_000, check_every_bytes=1, on_evict=remember
+    ) as store:
+        for index in range(5):
+            store.put(
+                key=cache_key("GET", f"https://origin.test/doc/{index}"),
+                url=f"https://origin.test/doc/{index}",
+                method="GET",
+                endpoint="origin.test/doc/{id}",
+                status=200,
+                headers=(),
+                body=body,
+                requested_at=float(index),
+                received_at=float(index),
+                volatility=Volatility.STATIC,
+                now=float(index),
+                pinned=index == 0,
+            )
+        remaining = {entry.url for entry in store.entries()}
+
+    # The pinned one outlived every unpinned one written after it.
+    assert "https://origin.test/doc/0" in remaining
+    assert [item.pinned for item in dropped[:2]] == [False, False]

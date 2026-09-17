@@ -26,7 +26,7 @@ import asyncio
 import json
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from leeward.attempt import AttemptEngine, CallReport
@@ -43,13 +43,14 @@ from leeward.cache.freshness import (
     decide,
     may_store,
 )
-from leeward.cache.store import CacheStore, SingleFlight, cache_key
+from leeward.cache.store import CacheStore, Evicted, SingleFlight, cache_key
 from leeward.chaos import FaultInjector
 from leeward.config import LoadedConfig
 from leeward.events import CacheInfo, EventFields, EventLog, RunRef
 from leeward.outcome import CallOutcome, build, stale_outcome_guard
 from leeward.policy import CallTarget, ResolvedPolicy, resolve
 from leeward.transport import Call, Fetched, Transport
+from leeward.units import human_bytes
 from leeward.vocab import (
     BreakerState,
     ClockTrust,
@@ -162,7 +163,11 @@ class Proxy:
         self.config = config
         self.clock = clock
         self.events = EventLog(data / "events", config.redact_headers())
-        self.cache = CacheStore(data / "cache")
+        self.cache = CacheStore(
+            data / "cache",
+            max_bytes=loaded.config.cache.max_bytes,
+            on_evict=self._evicted,
+        )
         self.breakers = Breakers(BreakerPolicy.from_settings(config.defaults.breaker))
         self.runs = Runs(BudgetLimits.from_settings(config.defaults.run_budget))
         self.injector = FaultInjector(
@@ -516,6 +521,20 @@ class Proxy:
             headers=(*_passable(entry.headers), *_leeward_headers(outcome, age_s)),
             body=body,
             from_cache=True,
+        )
+
+    def _evicted(self, evicted: Sequence[Evicted]) -> None:
+        """Say what the cache dropped, and say it louder when it was something pinned."""
+        freed = sum(item.body_bytes for item in evicted)
+        pinned = [item for item in evicted if item.pinned]
+        message = f"cache over {human_bytes(self.config.cache.max_bytes)}: dropped "
+        message += f"{len(evicted)} entries, freed {human_bytes(freed)}"
+        if pinned:
+            message += f", including {len(pinned)} pinned ({pinned[0].url})"
+        self.events.emit(
+            "warning",
+            RunRef.internal("cache-eviction"),
+            {"surface": str(Surface.CLI), "endpoint": "cache", "message": message},
         )
 
     def known_failure(self, endpoint: str) -> FailureClass | None:
