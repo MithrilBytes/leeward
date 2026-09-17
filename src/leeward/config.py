@@ -30,7 +30,7 @@ DEFAULT_WRITE_TOOL_PATTERN = (
     r"([_\-.]|[A-Z]|$)"
 )
 RESERVED_MOUNTS = frozenset({"fetch", "leeward", "mcp", "v1"})
-_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 SECRET_NAME = re.compile(
     r"(api[_-]?key|apikey|token|secret|passw(or)?d|authorization|credential|private[_-]?key)",
     re.IGNORECASE,
@@ -98,6 +98,8 @@ class StdioServer(Strict):
     transport: Literal["stdio"]
     command: list[str] = Field(min_length=1)
     env: dict[str, str] = {}
+    # Names of variables to pass through from leeward's environment, or shell-style
+    # patterns such as "GITHUB_*". "*" passes the whole environment.
     env_from: list[str] = []
     cwd: str | None = None
     accept_stale_argument: bool = False
@@ -354,13 +356,13 @@ class Config(Strict):
         if self.surfaces.forward.enabled and self.surfaces.forward.listen in shared:
             raise ValueError("surfaces.forward.listen must differ from the shared listener")
         for name, url in self.surfaces.fetch.mounts.items():
-            if name in RESERVED_MOUNTS or not _NAME.match(name):
+            if name in RESERVED_MOUNTS or not NAME.match(name):
                 raise ValueError(f"surfaces.fetch.mounts.{name}: reserved or invalid mount name")
             parts = urlsplit(url)
             if parts.scheme not in ("http", "https") or not parts.hostname:
                 raise ValueError(f"surfaces.fetch.mounts.{name}: {url!r} is not an http(s) URL")
         for name in self.surfaces.mcp.servers:
-            if not _NAME.match(name):
+            if not NAME.match(name):
                 raise ValueError(f"surfaces.mcp.servers.{name}: invalid server name")
         for label, names in (
             ("corpora", [c.name for c in self.corpora]),
@@ -383,7 +385,13 @@ class LoadedConfig:
 
     @property
     def base_dir(self) -> Path:
-        return self.source.parent if self.source is not None else Path.cwd()
+        """The configuration file's directory, or the home directory when there is none.
+
+        Without a file there is no project to keep state beside, and the working
+        directory is whatever the process that started leeward chose: often `/` for an
+        MCP client. The home directory is the one place every command finds again.
+        """
+        return self.source.parent if self.source is not None else Path.home()
 
     @property
     def data_dir(self) -> Path:

@@ -9,7 +9,9 @@ kept so a test can check what actually reached the tool.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -33,7 +35,8 @@ class Journal:
 
 
 def build_server(name: str = "notes", journal: Journal | None = None) -> tuple[MCPServer, Journal]:
-    """A server with two tools: one that answers, and one that can be taken away."""
+    """A server with two tools, one that answers and one that can be taken away, and a
+    prompt and a resource that a front has to pass through untouched."""
     kept = journal if journal is not None else Journal()
     server = MCPServer(name=name)
 
@@ -51,6 +54,16 @@ def build_server(name: str = "notes", journal: Journal | None = None) -> tuple[M
         kept.record("threat_intel_lookup", {"ioc": ioc})
         return f"no intelligence on record for {ioc}"
 
+    @server.prompt()
+    def summarize_incident(incident: str) -> str:
+        """Ask for a summary of one incident."""
+        return f"Summarize incident {incident} from its notes."
+
+    @server.resource("notes://index", mime_type="text/plain")
+    def notes_index() -> str:
+        """Which incidents have notes."""
+        return "blackout\nbrownout\nfailover"
+
     return server, kept
 
 
@@ -60,7 +73,14 @@ def vanish(server: MCPServer, tool: str = "threat_intel_lookup") -> None:
 
 
 def main() -> None:
-    """Run over stdio, which is how the demo's agent reaches it."""
+    """Run over stdio, which is how the demo's agent reaches it.
+
+    With LEEWARD_FAKE_PID_FILE set, the process id is written there first, so a test
+    talking to this server through a wrapper can still kill it.
+    """
+    pid_file = os.environ.get("LEEWARD_FAKE_PID_FILE")
+    if pid_file:
+        Path(pid_file).write_text(str(os.getpid()), encoding="utf-8")
     server, _journal = build_server()
     server.run(transport="stdio")
 

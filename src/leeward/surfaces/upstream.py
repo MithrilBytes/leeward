@@ -15,6 +15,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Mapping
+from fnmatch import fnmatchcase
 from typing import Any, Literal
 
 from mcp.client.client import Client
@@ -72,13 +73,15 @@ class Upstream:
             return self._server
         if isinstance(self.spec, StdioServer):
             command, *args = self.spec.command
+            patterns = self.spec.env_from
             passed = {
-                name: self._environment[name]
-                for name in self.spec.env_from
-                if name in self._environment
+                name: value
+                for name, value in self._environment.items()
+                if any(fnmatchcase(name, pattern) for pattern in patterns)
             }
+            # A value written into the configuration is more specific than one inherited.
             return StdioServerParameters(
-                command=command, args=args, env={**self.spec.env, **passed}, cwd=self.spec.cwd
+                command=command, args=args, env={**passed, **self.spec.env}, cwd=self.spec.cwd
             )
         return self.spec.url
 
