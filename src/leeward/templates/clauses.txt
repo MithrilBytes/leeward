@@ -5,7 +5,7 @@ because.slow: while {{host_or_tool}} is slow to answer (nothing within {{soft_hu
 because.revalidating: while a fresh copy is fetched in the background
 accuracy.static: the copy is very likely still accurate
 accuracy.slow: the copy is probably still accurate
-accuracy.volatile: the copy may be out of date, so check anything time-sensitive
+accuracy.volatile: the copy may be out of date. Check anything time-sensitive
 retry.connectivity: Retrying will not help until connectivity returns.
 retry.shortly: Calling again shortly may return a fresh copy.
 retry.never: Retrying will not help.
