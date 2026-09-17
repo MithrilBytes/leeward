@@ -20,21 +20,27 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from leeward.attempt import AttemptRecord, CallReport
 from leeward.budget import RunLedger, conversation_hash, resolve_run
+from leeward.classify import OK, Classification, Evidence, RunSnapshot, classify
+from leeward.classify import Response as Response_
 from leeward.config import Tier
-from leeward.events import RunRef, TokenInfo
+from leeward.deadlines import CallDeadlines, Deadline
+from leeward.events import CacheInfo, RunRef, TokenInfo
 from leeward.notes import status_line
-from leeward.outcome import CallOutcome
+from leeward.outcome import CallOutcome, build
+from leeward.policy import CallTarget, ResolvedPolicy, resolve
 from leeward.proxy import HttpRequest, Proxy, Served
-from leeward.vocab import Advice, Outcome, Surface
+from leeward.transport import Call, EvidenceError, Streamed
+from leeward.vocab import Advice, Outcome, Surface, Volatility
 
 RUN_HEADER = "x-leeward-run"
 SHOW_INJECTION_HEADER = "x-leeward-show-injection"
@@ -158,6 +164,38 @@ def inject_status_line(body: bytes, line: str) -> bytes:
     return json.dumps(document, ensure_ascii=False).encode("utf-8")
 
 
+def _one_attempt(classification: Classification, policy: ResolvedPolicy, now: float) -> CallReport:
+    """One attempt that has already happened, in the shape the outcome builder reads."""
+    return CallReport(
+        classification=classification,
+        attempts=(AttemptRecord(index=1, classification=classification, latency_ms=0),),
+        deadlines=CallDeadlines.start(policy, now),
+        deadline_hit="none",
+        elapsed_s=0.0,
+    )
+
+
+def _no_outcome() -> CallOutcome:
+    """Nothing was tried, which only happens when no tier is configured."""
+    from leeward.outcome import CallOutcome as Built
+
+    return Built(
+        outcome=Outcome.DOWN,
+        endpoint="(no tier)",
+        volatility=Volatility.NEVER,
+        advice=Advice.TREAT_AS_UNKNOWN,
+        note="[leeward] DOWN: no tier answered.",
+    )
+
+
+def _stream_error(outcome: CallOutcome, tier: str) -> bytes:
+    """One more SSE event, so a stream that stopped early says why in its own channel."""
+    body = error_body(outcome, tier)
+    return (
+        b"data: " + json.dumps(body, ensure_ascii=False).encode("utf-8") + b"\n\ndata: [DONE]\n\n"
+    )
+
+
 class ModelSurface:
     """The chat endpoint, and the tier ladder behind it."""
 
@@ -175,17 +213,13 @@ class ModelSurface:
         if not isinstance(parsed, dict):
             return self._refusal(400, "the request body must be a JSON object")
         payload = cast("Mapping[str, object]", parsed)
-        if payload.get("stream"):
-            return self._refusal(
-                400,
-                "leeward does not proxy streaming completions yet. Set stream to false, or"
-                " point this client straight at the provider.",
-            )
         tiers = tiers_of(self.proxy)
         if not tiers:
             return self._refusal(503, "no tiers are configured for the model surface")
 
         run = self._run_of(request, payload)
+        if payload.get("stream"):
+            return await self._stream(request, payload, tiers, run)
         ledger = self.proxy.runs.ledger(run, self.proxy.clock())
         attempted: list[Attempted] = []
         for tier in tiers:
@@ -262,6 +296,105 @@ class ModelSurface:
                 "X-Leeward-Advice": str(asked.served.outcome.advice),
                 "X-Leeward-Tier": asked.tier.name,
             },
+        )
+
+    async def _stream(
+        self,
+        request: Request,
+        payload: Mapping[str, object],
+        tiers: Sequence[Tier],
+        run: RunRef,
+    ) -> Response:
+        """A streamed completion: fail over before the first byte, explain after it.
+
+        Once a token has reached the client there is no failing over, because the client
+        has half an answer already. What leeward can still do is notice the stream has
+        stopped early and say so in the stream itself, as one more event, so the model's
+        caller sees why the text ends where it does.
+        """
+        opened: Streamed | None = None
+        tried: list[str] = []
+        chosen: Tier | None = None
+        failure: CallOutcome | None = None
+        for tier in tiers:
+            tried.append(tier.name)
+            call = Call(
+                "POST",
+                _endpoint(tier),
+                headers=_headers(tier, request),
+                body=_with_model(payload, tier),
+            )
+            policy = resolve(self.proxy.config, CallTarget.parse(call.url))
+            try:
+                started = await self.proxy.transport.open(
+                    call, policy, Deadline(self.proxy.clock() + policy.hard_deadline_s)
+                )
+            except EvidenceError as error:
+                failure = self._stream_failure(tier, policy, run, error.evidence)
+                continue
+            if started.status >= 400:
+                await started.aclose()
+                failure = self._stream_failure(
+                    tier, policy, run, Response_(started.status, dict(started.headers), b"")
+                )
+                continue
+            opened, chosen = started, tier
+            break
+
+        if opened is None or chosen is None:
+            body = error_body(failure or _no_outcome(), tried[0] if tried else None)
+            cast("dict[str, object]", body["error"])["tried"] = tried
+            return JSONResponse(body, status_code=502)
+
+        return StreamingResponse(
+            self._chunks(opened, chosen, run),
+            status_code=opened.status,
+            media_type=dict(opened.headers).get("Content-Type", "text/event-stream"),
+            headers={"X-Leeward-Tier": chosen.name, "X-Leeward-Stream": "passthrough"},
+        )
+
+    async def _chunks(self, opened: Streamed, tier: Tier, run: RunRef) -> AsyncIterator[bytes]:
+        policy = resolve(self.proxy.config, CallTarget.parse(_endpoint(tier)))
+        try:
+            async for chunk in opened.chunks():
+                yield chunk
+        except EvidenceError as error:
+            outcome = self._stream_failure(tier, policy, run, error.evidence)
+            yield _stream_error(outcome, tier.name)
+        else:
+            self._stream_ok(tier, policy, run, opened.received)
+        finally:
+            await opened.aclose()
+
+    def _stream_failure(
+        self, tier: Tier, policy: ResolvedPolicy, run: RunRef, evidence: Evidence
+    ) -> CallOutcome:
+        ledger = self.proxy.runs.ledger(run, self.proxy.clock())
+        snapshot = RunSnapshot(
+            now=self.proxy.engine.wall_clock(),
+            retry_seconds_remaining=ledger.remaining(policy.endpoint).retry_seconds,
+            clock=self.proxy.engine.clock_trust(),
+        )
+        classification = classify(evidence, policy, snapshot)
+        self.proxy.breakers.record(
+            policy.target.origin, policy.endpoint, classification, self.proxy.clock()
+        )
+        report = _one_attempt(classification, policy, self.proxy.clock())
+        outcome = build(Outcome.DOWN, policy, report=report, ledger=ledger, now=self.proxy.clock())
+        self.proxy.record(outcome, report, Surface.LLM, run, ledger, cache=CacheInfo(hit=False))
+        return outcome
+
+    def _stream_ok(self, tier: Tier, policy: ResolvedPolicy, run: RunRef, received: int) -> None:
+        ledger = self.proxy.runs.ledger(run, self.proxy.clock())
+        report = _one_attempt(OK, policy, self.proxy.clock())
+        outcome = build(Outcome.FRESH, policy, report=report, ledger=ledger, now=self.proxy.clock())
+        self.proxy.record(
+            outcome,
+            report,
+            Surface.LLM,
+            run,
+            ledger,
+            cache=CacheInfo(hit=False, bytes_served=received),
         )
 
     def _refusal(self, status: int, message: str) -> Response:
