@@ -27,6 +27,7 @@ from leeward.config import LoadedConfig
 from leeward.policy import CallTarget
 from leeward.proxy import Proxy
 from leeward.surfaces.fetch import mount_routes, refusal
+from leeward.surfaces.llm import mount_routes as model_routes
 from leeward.surfaces.mcp import Mounted, mount_servers
 
 
@@ -67,6 +68,9 @@ def build_app(proxy: Proxy, *, close_with_app: bool = True) -> Starlette:
     ]
     if mcp is not None:
         routes += mcp.routes
+    if proxy.config.surfaces.llm.enabled:
+        # Before the fetch mounts: a mount named v1 must not shadow the model endpoint.
+        routes += model_routes(proxy)
     if proxy.config.surfaces.fetch.enabled:
         routes += mount_routes(proxy)
     return Starlette(routes=routes, lifespan=lifespan)
