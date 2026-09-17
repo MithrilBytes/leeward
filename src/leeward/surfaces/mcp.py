@@ -6,9 +6,9 @@ and nothing in the agent's prompt has to change. What changes is what a failure
 looks like. A tool that has vanished from its server comes back as one refusal that
 says it is permanent for this run, instead of three retries and an error string.
 
-A result that came from the cache carries a note block ahead of the content and the
-outcome in `structuredContent.leeward`, so the model reading the text and the
-program reading the structure are told the same thing.
+A result that came from the cache, or a failure, carries a note block ahead of the
+content, and every result carries the outcome in `_meta`, so the model reading the
+text and the program reading the metadata are told the same thing.
 
 Only `tools/call` is treated this way. Prompts and resources are passed to the
 upstream server and its answers come back unchanged.
@@ -57,6 +57,16 @@ from leeward.surfaces.upstream import describe as describe
 from leeward.transport import Call
 from leeward.vocab import Outcome, Surface
 
+OUTCOME_META_KEY = "io.github.mithrilbytes.leeward/outcome"
+"""Where a tool result carries leeward's outcome.
+
+In `_meta`, not `structuredContent`: a tool that declares an output schema has to
+return structured content that matches it, and an SDK client refuses a result with a
+key the schema does not allow. The key has a reverse DNS vendor prefix, as the
+protocol asks of anyone adding to `_meta`.
+https://modelcontextprotocol.io/specification/2026-07-28/basic/index#_meta
+"""
+
 ACCEPT_STALE_ARGUMENT = "accept_stale"
 ACCEPT_STALE_SCHEMA: dict[str, object] = {
     "type": "boolean",
@@ -73,18 +83,18 @@ def note_block(outcome: CallOutcome) -> TextContent:
 
 
 def with_outcome(result: CallToolResult | None, outcome: CallOutcome) -> CallToolResult:
-    """The upstream result, unchanged, with leeward's note ahead of it and its outcome beside it."""
+    """The upstream result, unchanged, with leeward's note ahead of its content and its
+    outcome in `_meta`. A failure with no result to carry is leeward's own, marked as an
+    error."""
+    failed = outcome.outcome is Outcome.DOWN or bool(result is not None and result.is_error)
+    meta = {**(result.meta or {})} if result is not None else {}
+    meta[OUTCOME_META_KEY] = outcome.as_dict()
     content = list(result.content) if result is not None else []
     if outcome.note:
         content.insert(0, note_block(outcome))
-    structured = dict(cast("dict[str, Any]", result.structured_content or {})) if result else {}
-    structured["leeward"] = outcome.as_dict()
-    failed = outcome.outcome is Outcome.DOWN or bool(result is not None and result.is_error)
-    return CallToolResult(
-        content=content,  # pyright: ignore[reportArgumentType]
-        structured_content=structured,
-        is_error=failed,
-    )
+    if result is None:
+        return CallToolResult(content=content, is_error=failed, _meta=meta)  # pyright: ignore[reportArgumentType]
+    return result.model_copy(update={"content": content, "meta": meta, "is_error": failed})
 
 
 def stored_result(body: bytes) -> CallToolResult:

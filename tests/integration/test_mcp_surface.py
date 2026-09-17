@@ -22,12 +22,13 @@ from mcp.client.client import Client
 from mcp.server.mcpserver import MCPServer
 from mcp.shared.exceptions import MCPError
 from mcp_types import CONNECTION_CLOSED
+from pydantic import BaseModel, ConfigDict
 
 from leeward.config import parse_config
 from leeward.events import read_events
 from leeward.proxy import Proxy
 from leeward.serve import build_app
-from leeward.surfaces.mcp import ServerFront, Upstream, describe
+from leeward.surfaces.mcp import OUTCOME_META_KEY, ServerFront, Upstream, describe
 from leeward.vocab import BreakerState
 from tests.support import REPO_ROOT, assert_valid
 
@@ -71,9 +72,9 @@ async def front(
 
 
 def leeward_field(result: object) -> dict[str, Any]:
-    structured = cast("Any", result).structured_content
-    assert isinstance(structured, dict)
-    return cast("dict[str, Any]", structured["leeward"])
+    meta = cast("Any", result).meta
+    assert isinstance(meta, dict)
+    return cast("dict[str, Any]", meta[OUTCOME_META_KEY])
 
 
 async def test_a_client_sees_the_same_tools_through_leeward(
@@ -158,6 +159,45 @@ async def test_a_second_call_to_a_vanished_tool_costs_nothing(
     assert outcome["failure"]["underlying_class"] == "TOOL_GONE"
     assert outcome["advice"] == "DO_NOT_RETRY"
     assert journal.hits("threat_intel_lookup") == 1
+
+
+class Window(BaseModel):
+    """A structured result whose schema allows no other keys, as many real servers' do."""
+
+    model_config = ConfigDict(extra="forbid")
+    region: str
+    minutes: int
+
+
+async def test_a_tool_with_a_strict_output_schema_still_validates_fresh_and_stale(
+    front: tuple[ServerFront, Proxy, Journal], upstream: tuple[MCPServer, Journal]
+) -> None:
+    fronted, _proxy, _journal = front
+    server, _other = upstream
+    answered: list[str] = []
+
+    @server.tool()
+    def outage_window(region: str) -> Window:
+        """How long a region has been dark. Fails after its first answer."""
+        if answered:
+            raise RuntimeError("the outage feed is not answering")
+        answered.append(region)
+        return Window(region=region, minutes=42)
+
+    # The SDK client checks structured content against the declared schema, and
+    # raises rather than return a result with a key the schema does not allow.
+    async with Client(fronted) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+        fresh = await client.call_tool("outage_window", {"region": "north"})
+        stale = await client.call_tool("outage_window", {"region": "north"})
+
+    schema = cast("dict[str, Any]", tools["outage_window"].output_schema)
+    assert schema["additionalProperties"] is False
+    assert (
+        fresh.structured_content == stale.structured_content == {"region": "north", "minutes": 42}
+    )
+    assert (leeward_field(fresh)["outcome"], leeward_field(stale)["outcome"]) == ("FRESH", "STALE")
+    assert describe(stale).startswith("[leeward] STALE")
 
 
 async def test_a_live_server_sending_the_closed_connection_code_is_not_taken_for_gone(
