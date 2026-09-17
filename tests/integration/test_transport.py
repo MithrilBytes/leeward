@@ -14,6 +14,7 @@ from fakes.origin import FakeOrigin, Reply, constant, document
 
 from leeward.classify import (
     ConnectRefused,
+    ConnectTimedOut,
     Malformed,
     ReadTimedOut,
     ResolutionFailed,
@@ -87,7 +88,9 @@ async def test_a_refused_connection_says_so(transport: Transport) -> None:
     fetched = await transport.fetch(
         Call("GET", f"http://127.0.0.1:{closed_port()}/doc"), POLICY, in_(5)
     )
-    assert isinstance(fetched.evidence, ConnectRefused)
+    # A closed port is refused on Linux and macOS. Windows drops the packet instead,
+    # so the connection times out. Both are "nothing is listening"; neither is a retry.
+    assert isinstance(fetched.evidence, ConnectRefused | ConnectTimedOut)
     assert not fetched.connected
 
 

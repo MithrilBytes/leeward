@@ -116,7 +116,10 @@ async def run(loaded: LoadedConfig, name: str, command: Sequence[str]) -> bool:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
-        with contextlib.suppress(NotImplementedError):
+        # Windows raises ValueError for a signal its event loop will not take, and
+        # NotImplementedError elsewhere. Either way the client's other way of stopping
+        # a stdio server, closing its input, still works.
+        with contextlib.suppress(NotImplementedError, ValueError):
             # A client stops a stdio server by closing its input, then with SIGTERM, and
             # the server leeward started is in a process group of its own, so leeward
             # has to stop it on the way out.
