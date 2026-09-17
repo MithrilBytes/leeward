@@ -5,20 +5,20 @@ import pytest
 from scripts.demo import duration, fill, result_text
 
 
-def test_fill_replaces_each_region_and_leaves_the_rest_alone() -> None:
+def test_fill_replaces_the_region_it_was_given() -> None:
     text = "intro\n<!-- demo:suite -->\nold words\n<!-- /demo:suite -->\noutro\n"
-    assert fill(text, {"suite": "The suite is 1 test.", "unused": "x"}) == (
+    assert fill(text, {"suite": "The suite is 1 test."}) == (
         "intro\n<!-- demo:suite -->\n\nThe suite is 1 test.\n\n<!-- /demo:suite -->\noutro\n"
     )
 
 
-def test_fill_refuses_a_region_it_has_nothing_for() -> None:
-    with pytest.raises(ValueError, match="demo:numbers"):
-        fill("<!-- demo:numbers -->\nold\n<!-- /demo:numbers -->\n", {"suite": "x"})
+def test_fill_refuses_a_region_the_file_does_not_have() -> None:
+    with pytest.raises(ValueError, match="no such region in the file: numbers"):
+        fill("<!-- demo:suite -->\nold\n<!-- /demo:suite -->\n", {"numbers": "x"})
 
 
 def test_fill_refuses_text_without_regions() -> None:
-    with pytest.raises(ValueError, match="no <!-- demo:NAME --> regions"):
+    with pytest.raises(ValueError, match="no such region in the file: suite"):
         fill("nothing marked here\n", {"suite": "x"})
 
 
