@@ -146,13 +146,13 @@ class Upstream:
     async def closed(self, within_s: float) -> bool:
         """Whether the session has really closed, confirmed with a second request.
 
-        The SDK reports a closed connection as error -32000, which JSON-RPC 2.0 also
-        leaves to servers for errors of their own, so the code alone is not enough to
-        give up on a server that may still be answering. A request on a closed
-        connection fails at once; one that has not been answered within `within_s` is
-        given the benefit of the doubt. The request is tools/list rather than ping,
-        which the 2026-07-28 revision removed.
-        https://www.jsonrpc.org/specification#error_object
+        The SDK reports a closed connection as error -32000, a code MCP leaves without
+        a fixed meaning and servers use for errors of their own, so the code alone is
+        not enough to give up on a server that may still be answering. A request on a
+        closed connection fails at once; one that has not been answered within
+        `within_s` is given the benefit of the doubt. The request is tools/list rather
+        than ping, which the 2026-07-28 revision removed.
+        https://modelcontextprotocol.io/specification/2026-07-28/basic/index#error-codes
         """
         client = self._client
         if client is None:
