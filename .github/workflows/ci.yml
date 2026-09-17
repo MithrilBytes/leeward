@@ -25,12 +25,13 @@ jobs:
   check:
     name: check (${{ matrix.os }}, python ${{ matrix.python }})
     strategy:
-      # A failure on one platform says nothing about the other, so both run to the end.
+      # A failure on one platform says nothing about the others, so each runs to the end.
       fail-fast: false
       matrix:
-        # macos-26 is the arm64 image.
+        # macos-26 is the arm64 image. Windows runs the same make targets; the
+        # Makefile knows where a virtual environment puts its programs there.
         # https://github.com/actions/runner-images#available-images
-        os: [ubuntu-24.04, macos-26]
+        os: [ubuntu-24.04, macos-26, windows-2025]
         python: ["3.11", "3.13"]
     runs-on: ${{ matrix.os }}
     # The default is 360 minutes, which a hung test would spend in full.
