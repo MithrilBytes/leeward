@@ -14,36 +14,55 @@ An agent that calls a tool and gets back `Error: request failed` cannot tell a t
 
 ## Measured
 
-From a real run against a local fake origin and a fake MCP server, on a MacBook Pro with Apple silicon. The script arms each failure and reports what came back.
+`make demo` arms each failure against the fakes in this repository and rewrites this table and the notes below from what came back. The HTTP cases run in process against a fake origin on a real socket. The MCP cases run `leeward wrap` and the fake server as separate processes, and the server drops a tool or is killed with SIGKILL partway through. Attempts come from leeward's event log; "reached upstream" counts requests the origin read and tool calls the server ran, from the fakes' own counters.
 
-| Case | Result | Time | Attempts | Calls that reached the origin |
+<!-- demo:measured -->
+
+Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.1.0.dev0, 2026-09-16.
+
+| Case | Result | Time | Attempts | Reached upstream |
 | --- | --- | --- | --- | --- |
-| Origin hangs after connecting | `DOWN{WEDGED}`, 504, `DO_NOT_RETRY` | 30.01 s (hard deadline 30 s) | 2 | 2 |
-| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED` | 1.2 ms | 0 | 0 |
-| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, `DO_NOT_RETRY` | 8 ms | 1 | 1 |
-| Static page, origin killed | `STALE`, 200, `PROCEED_WITH_CAUTION` | 0.3 ms | 0 | 0 |
-| Live endpoint, origin killed | `DOWN`, 503, `TREAT_AS_UNKNOWN` | 102 ms | 2 | 2 |
-| MCP tool removed mid session | `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 7.6 ms | 1 | 1 |
-| Same tool, next call | `BREAKER_OPEN` carrying `TOOL_GONE` | 0.3 ms | 0 | 0 |
+| Origin hangs after connecting | `DOWN{WEDGED}`, 504, `DO_NOT_RETRY` | 30.01 s | 2 | 2 |
+| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 0.5 ms | 0 | 0 |
+| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 2.9 ms | 1 | 1 |
+| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 1.3 ms | 0 | 0 |
+| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 107 ms | 2 | 0 |
+| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 11 ms | 1 | 0 |
+| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 4.7 ms | 1 | 0 |
+| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.2 ms | 0 | 0 |
+| Another tool on it, next call | `FRESH`, `PROCEED` | 596 ms | 1 | 1 |
+| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 4.2 ms | 1 | 0 |
 
-The suite is 392 tests, about 5 seconds, on Python 3.11 and 3.13, Linux and macOS.
+<!-- /demo:measured -->
+
+<!-- demo:suite -->
+
+The suite is 427 tests, 11 seconds on the machine above.
+
+<!-- /demo:suite -->
+
+CI runs the suite on Python 3.11 and 3.13, on Linux and macOS.
 
 ## What a note looks like
 
 Notes are what the model reads. They are capped at 400 characters, always prefixed, and never contain content from the origin. These three are verbatim from the run above.
 
+<!-- demo:notes -->
+
 ```text
-[leeward] STALE: served a copy stored 106ms ago because 127.0.0.1 is unreachable
-(CONNECT_REFUSED). This endpoint is classified `static`, so the copy is very likely
-still accurate. Retrying will not help until connectivity returns.
+[leeward] STALE: served a copy stored 40ms ago because intel/incident_notes is
+unreachable (TOOL_GONE). This endpoint is classified `volatile`, so the copy may be out
+of date. Check anything time-sensitive. Retrying will not help for the rest of this run.
 
-[leeward] DOWN: the tool `threat_intel_lookup` is gone from its MCP server (intel).
-This is permanent for this run; further attempts will not succeed. Other tools on
-this server are unaffected.
+[leeward] DOWN: the tool `threat_intel_lookup` is gone from its MCP server (intel). This
+is permanent for this run; further attempts will not succeed. Other tools on this server
+are unaffected.
 
-[leeward] DOWN: 127.0.0.1 returned nothing (WEDGED after 30s, 2 attempts). Retrying
-will not help until connectivity returns.
+[leeward] DOWN: 127.0.0.1 returned nothing (WEDGED after 30s, 2 attempts). Retrying will
+not help until connectivity returns.
 ```
+
+<!-- /demo:notes -->
 
 Beside every note, machine readers get the same decision as structured data: the outcome, the failure class, the advice, the age of anything served, and what was withheld.
 
@@ -53,12 +72,16 @@ Some values are only worth having if they are current. A wind reading from 40 mi
 
 Mark those endpoints `class: live` and leeward will never serve them from cache, however badly the origin is failing. It says so, and it names the copy it is holding back rather than pretending none exists:
 
+<!-- demo:note-live -->
+
 ```text
-[leeward] DOWN: 127.0.0.1 returned nothing (CONNECT_REFUSED after 102ms, 2 attempts).
+[leeward] DOWN: 127.0.0.1 returned nothing (CONNECT_REFUSED after 106ms, 2 attempts).
 This endpoint is classified `live`: a cached value from 0s ago exists but is not being
 served, because only the current value is meaningful here. Treat this value as unknown
 and say so rather than estimating it.
 ```
+
+<!-- /demo:note-live -->
 
 No configuration option, request header or tool argument overrides this. Three independent places enforce it: the policy layer refuses to build a stale allowance for a live endpoint, the serving path checks again before it hands anything back, and the event log refuses to record a stale serve of a live endpoint at all. A property test asserts it across generated policies and cache states.
 
@@ -118,7 +141,7 @@ Not on PyPI yet.
 
 Working today: configuration and policy resolution, the classifier, breakers, budgets, deadlines and attempts, the cache and its freshness rules, notes and outcomes, the event log, the MCP surface, the HTTP surface, status and forecast, and fault injection for testing.
 
-Not built yet: the warmer and its corpora, the model surface, the forward proxy, the reporting command, most of the CLI, and the recorded demo. The numbers above will be regenerated by that demo when it lands.
+Not built yet: the warmer and its corpora, the model surface, the forward proxy, the reporting command, most of the CLI, and a recorded demo of an agent run. The numbers above come from `make demo`.
 
 ## License
 
