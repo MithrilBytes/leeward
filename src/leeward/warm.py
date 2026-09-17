@@ -20,7 +20,7 @@ import asyncio
 import mimetypes
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from html.parser import HTMLParser
@@ -156,13 +156,22 @@ class Pace:
 class Warmer:
     """Runs corpora against the same proxy every other surface uses."""
 
-    def __init__(self, proxy: Proxy, *, trigger: Trigger = "cli") -> None:
+    def __init__(
+        self,
+        proxy: Proxy,
+        *,
+        trigger: Trigger = "cli",
+        upstreams: Mapping[str, Upstream] | None = None,
+    ) -> None:
         self.proxy = proxy
         self.trigger: Trigger = trigger
         self.user_agent = proxy.config.warm.user_agent or f"leeward/{__version__}"
         self._pace: dict[str, Pace] = {}
         self._robots: dict[str, RobotFileParser | None] = {}
-        self._upstreams: dict[str, Upstream] = {}
+        # A caller may hand over servers it already has open, which is how a test, or a
+        # process already fronting one, avoids starting a second copy of it.
+        self._upstreams: dict[str, Upstream] = dict(upstreams or {})
+        self._borrowed = set(upstreams or {})
 
     def corpora(self, names: Sequence[str] = ()) -> list[Corpus]:
         """The corpora asked for, or all of them, in configuration order."""
@@ -496,10 +505,11 @@ class Warmer:
         return self._pace[host]
 
     async def aclose(self) -> None:
-        """Close any MCP server this run opened."""
-        for upstream in self._upstreams.values():
-            await upstream.aclose()
-        self._upstreams.clear()
+        """Close the MCP servers this run opened, and leave borrowed ones alone."""
+        for name, upstream in list(self._upstreams.items()):
+            if name not in self._borrowed:
+                await upstream.aclose()
+        self._upstreams = {name: self._upstreams[name] for name in self._borrowed}
 
     def _record(self, result: Result, run: RunRef) -> None:
         self.proxy.events.emit(
