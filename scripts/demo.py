@@ -284,7 +284,7 @@ async def mcp_cases(scratch: Path, measured: Measured) -> None:
     attempts = call_attempts(data)
     record(measured, "MCP server killed mid session", killed, attempts[1])
     record(measured, "Same tool, next call", again, attempts[2])
-    record(measured, "Another tool on it, next call", other, attempts[3])
+    record(measured, "Another tool on that server, next call", other, attempts[3])
 
     async with wrapped(scratch, "cache", "--cache", "incident_notes") as session:
         await timed(session, "incident_notes", {"query": "blackout"})
