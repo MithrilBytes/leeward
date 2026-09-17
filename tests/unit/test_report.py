@@ -147,3 +147,71 @@ def test_doctor_reports_the_wiring_and_fails_on_a_broken_config(workdir: Path) -
     broken = runner.invoke(app, ["doctor"])
     assert broken.exit_code == 1
     assert "FAIL configuration" in broken.output
+
+
+def test_cache_commands_list_pin_and_forget_what_is_stored(workdir: Path) -> None:
+    from leeward.cache.store import CacheStore, cache_key
+    from leeward.vocab import Volatility
+
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    key = cache_key("GET", "https://example.test/wiki/Foo")
+    with CacheStore(workdir / ".leeward" / "cache") as store:
+        store.put(
+            key=key,
+            url="https://example.test/wiki/Foo",
+            method="GET",
+            endpoint="example.test/wiki/{id}",
+            status=200,
+            headers=(("Cache-Control", "max-age=60"),),
+            body=b"a stored page",
+            requested_at=0.0,
+            received_at=0.0,
+            volatility=Volatility.STATIC,
+            now=0.0,
+        )
+
+    listed = runner.invoke(app, ["cache", "ls"])
+    assert listed.exit_code == 0, listed.output
+    assert "example.test/wiki/{id}" in listed.output
+
+    stats = json.loads(runner.invoke(app, ["cache", "stats", "--json"]).output)
+    assert (stats["entries"], stats["bytes"], stats["pinned"]) == (1, len(b"a stored page"), 0)
+
+    assert runner.invoke(app, ["cache", "pin", "*wiki*"]).exit_code == 0
+    assert json.loads(runner.invoke(app, ["cache", "stats", "--json"]).output)["pinned"] == 1
+
+    assert json.loads(runner.invoke(app, ["cache", "rm", "--json", "*"]).output)["removed"] == 1
+    assert json.loads(runner.invoke(app, ["cache", "stats", "--json"]).output)["entries"] == 0
+    assert "nothing stored" in runner.invoke(app, ["cache", "ls"]).output
+
+
+def test_chaos_arms_lists_and_lifts_faults(workdir: Path) -> None:
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    (workdir / "leeward.yaml").write_text(
+        "profile: dev\ndata_dir: ./.leeward\nchaos:\n  enabled: true\n", encoding="utf-8"
+    )
+
+    armed = runner.invoke(app, ["chaos", "arm", "*/wiki/*", "--fail", "dns_failure"])
+    assert armed.exit_code == 0, armed.output
+    assert "DNS_FAILURE" in armed.output
+
+    listed = json.loads(runner.invoke(app, ["chaos", "ls", "--json"]).output)
+    assert listed[0]["target"] == "*/wiki/*"
+    assert listed[0]["failure_class"] == "DNS_FAILURE"
+
+    refused = runner.invoke(app, ["chaos", "arm", "*", "--fail", "not_a_class"])
+    assert refused.exit_code == 2
+    assert "use one of" in refused.output
+
+    lifted = json.loads(runner.invoke(app, ["chaos", "clear", "--json"]).output)
+    assert len(lifted["lifted"]) == 1
+    assert "nothing armed" in runner.invoke(app, ["chaos", "ls"]).output
+
+
+def test_chaos_refuses_to_arm_anything_in_production(workdir: Path) -> None:
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    (workdir / "leeward.yaml").write_text(
+        "profile: production\nchaos:\n  enabled: true\n", encoding="utf-8"
+    )
+    refused = runner.invoke(app, ["chaos", "arm", "*", "--fail", "dns_failure"])
+    assert refused.exit_code == 2

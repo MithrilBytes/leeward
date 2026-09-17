@@ -19,7 +19,9 @@ import platform
 import re
 import shutil
 import sys
+import time
 from collections.abc import Mapping
+from fnmatch import fnmatchcase
 from importlib.resources import files
 from pathlib import Path
 from typing import Annotated, cast
@@ -29,6 +31,8 @@ from rich.console import Console
 from rich.table import Table
 
 from leeward import __version__
+from leeward.cache.store import CacheStore
+from leeward.chaos import INJECTABLE, ChaosDisabledError, Fault, FaultInjector
 from leeward.config import (
     NAME,
     Config,
@@ -40,7 +44,8 @@ from leeward.config import (
 from leeward.events import follow, read_events, run_id
 from leeward.policy import CallTarget, resolve
 from leeward.templates import template_set_sha256
-from leeward.units import human_bytes, parse_duration
+from leeward.units import human_bytes, human_duration, parse_duration
+from leeward.vocab import FailureClass
 
 app = typer.Typer(
     add_completion=False,
@@ -530,6 +535,242 @@ def _through_leeward(entry: object) -> bool:
     listed = cast("list[object]", arguments) if isinstance(arguments, list) else []
     first = listed[0] if listed else None
     return isinstance(command, str) and Path(command).name == "leeward" and first == "wrap"
+
+
+cache_app = typer.Typer(no_args_is_help=True, help="Inspect what leeward has stored.")
+chaos_app = typer.Typer(no_args_is_help=True, help="Arm and lift faults, to prove what happens.")
+app.add_typer(cache_app, name="cache")
+app.add_typer(chaos_app, name="chaos")
+
+
+def _store(loaded: LoadedConfig) -> CacheStore:
+    return CacheStore(loaded.data_dir / "cache")
+
+
+@cache_app.command("ls")
+def cache_ls(
+    pattern: Annotated[str, typer.Argument(help="Match endpoints or URLs, e.g. 'notes/*'.")] = "*",
+    config_path: ConfigOption = None,
+    json_output: JsonOption = False,
+) -> None:
+    """List what is stored, newest first."""
+    loaded = _load(config_path)
+    now = time.time()
+    with _store(loaded) as store:
+        rows = [
+            entry
+            for entry in store.entries()
+            if fnmatchcase(entry.endpoint, pattern) or fnmatchcase(entry.url, pattern)
+        ]
+    rows.sort(key=lambda entry: entry.stored_at, reverse=True)
+    if json_output:
+        _print_json(
+            [
+                {
+                    "key": entry.key,
+                    "endpoint": entry.endpoint,
+                    "url": entry.url,
+                    "volatility": str(entry.volatility),
+                    "bytes": entry.body_bytes,
+                    "age_s": round(max(now - entry.stored_at, 0.0), 3),
+                    "pinned": entry.pinned,
+                }
+                for entry in rows
+            ]
+        )
+        return
+    if not rows:
+        _out.print("nothing stored", markup=False)
+        return
+    table = Table(box=None, pad_edge=False)
+    for column, align in (
+        ("endpoint", "left"),
+        ("class", "left"),
+        ("age", "right"),
+        ("size", "right"),
+        ("pinned", "left"),
+        ("url", "left"),
+    ):
+        table.add_column(column, justify=align)  # pyright: ignore[reportArgumentType]
+    for entry in rows:
+        table.add_row(
+            entry.endpoint or "(none)",
+            str(entry.volatility),
+            human_duration(max(now - entry.stored_at, 0.0)),
+            human_bytes(entry.body_bytes),
+            "yes" if entry.pinned else "",
+            entry.url,
+        )
+    _out.print(table)
+
+
+@cache_app.command("stats")
+def cache_stats(config_path: ConfigOption = None, json_output: JsonOption = False) -> None:
+    """How much is stored, and how old the oldest is."""
+    loaded = _load(config_path)
+    with _store(loaded) as store:
+        stats = store.stats()
+    oldest = stats.oldest_stored_at
+    payload = {
+        "entries": stats.entries,
+        "bytes": stats.bytes,
+        "pinned": stats.pinned,
+        "oldest_stored_at": oldest,
+    }
+    if json_output:
+        _print_json(payload)
+        return
+    _out.print(
+        f"{stats.entries} entries, {human_bytes(stats.bytes)}, {stats.pinned} pinned",
+        markup=False,
+    )
+    if oldest is not None:
+        _out.print(f"oldest stored {human_duration(max(time.time() - oldest, 0.0))} ago")
+
+
+@cache_app.command("rm")
+def cache_rm(
+    pattern: Annotated[str, typer.Argument(help="Match endpoints or URLs. Use '*' for all.")],
+    config_path: ConfigOption = None,
+    json_output: JsonOption = False,
+) -> None:
+    """Forget stored responses. Pinned ones go too, since you named them."""
+    loaded = _load(config_path)
+    with _store(loaded) as store:
+        keys = [
+            entry.key
+            for entry in store.entries()
+            if fnmatchcase(entry.endpoint, pattern) or fnmatchcase(entry.url, pattern)
+        ]
+        for key in keys:
+            store.delete(key)
+    if json_output:
+        _print_json({"removed": len(keys)})
+        return
+    _out.print(f"removed {len(keys)}", markup=False)
+
+
+@cache_app.command("pin")
+def cache_pin(
+    pattern: Annotated[str, typer.Argument(help="Match endpoints or URLs.")],
+    unpin: Annotated[bool, typer.Option("--unpin", help="Release instead of pinning.")] = False,
+    config_path: ConfigOption = None,
+    json_output: JsonOption = False,
+) -> None:
+    """Keep matching entries through eviction, or release them again."""
+    loaded = _load(config_path)
+    with _store(loaded) as store:
+        keys = [
+            entry.key
+            for entry in store.entries()
+            if fnmatchcase(entry.endpoint, pattern) or fnmatchcase(entry.url, pattern)
+        ]
+        for key in keys:
+            store.pin(key, not unpin)
+    verb = "released" if unpin else "pinned"
+    if json_output:
+        _print_json({verb: len(keys)})
+        return
+    _out.print(f"{verb} {len(keys)}", markup=False)
+
+
+def _injector(loaded: LoadedConfig) -> FaultInjector:
+    return FaultInjector(
+        loaded.data_dir / "chaos.json",
+        enabled=loaded.config.chaos.enabled,
+        profile=loaded.config.profile,
+    )
+
+
+@chaos_app.command("arm")
+def chaos_arm(
+    target: Annotated[str, typer.Argument(help="Endpoint or host pattern, e.g. '*/wiki/*'.")],
+    failure: Annotated[
+        str | None, typer.Option("--fail", help="A failure class, e.g. DNS_FAILURE.")
+    ] = None,
+    latency: Annotated[
+        str | None, typer.Option("--latency", help="Delay every call, e.g. 2s.")
+    ] = None,
+    retry_after: Annotated[
+        str | None, typer.Option("--retry-after", help="Retry-After to report, e.g. 1h.")
+    ] = None,
+    for_: Annotated[str | None, typer.Option("--for", help="Lift it after, e.g. 10m.")] = None,
+    host: Annotated[bool, typer.Option("--host", help="Match the host, not the endpoint.")] = False,
+    config_path: ConfigOption = None,
+    json_output: JsonOption = False,
+) -> None:
+    """Arm a fault, so a forecast and a demo can be made to happen on purpose."""
+    loaded = _load(config_path)
+    try:
+        klass = FailureClass(failure.upper()) if failure else None
+    except ValueError as exc:
+        allowed = ", ".join(sorted(str(item) for item in INJECTABLE))
+        raise _fail(f"--fail {failure!r}: use one of {allowed}") from exc
+    try:
+        fault = _injector(loaded).arm(
+            target,
+            now=time.time(),
+            scope="host" if host else "endpoint",
+            failure_class=klass,
+            latency_s=parse_duration(latency) if latency else 0.0,
+            retry_after_s=parse_duration(retry_after) if retry_after else None,
+            for_seconds=parse_duration(for_) if for_ else None,
+        )
+    except (ChaosDisabledError, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+    if json_output:
+        _print_json(fault.as_dict())
+        return
+    _out.print(f"armed {_fault_line(fault)}", markup=False)
+
+
+@chaos_app.command("ls")
+def chaos_ls(config_path: ConfigOption = None, json_output: JsonOption = False) -> None:
+    """What is armed right now."""
+    loaded = _load(config_path)
+    faults = _injector(loaded).all(time.time())
+    if json_output:
+        _print_json([fault.as_dict() for fault in faults])
+        return
+    if not faults:
+        _out.print("nothing armed", markup=False)
+        return
+    for fault in faults:
+        _out.print(_fault_line(fault), markup=False)
+
+
+@chaos_app.command("clear")
+def chaos_clear(
+    target: Annotated[
+        str | None, typer.Argument(help="Target to lift. Omit to lift everything.")
+    ] = None,
+    config_path: ConfigOption = None,
+    json_output: JsonOption = False,
+) -> None:
+    """Lift armed faults."""
+    loaded = _load(config_path)
+    injector = _injector(loaded)
+    try:
+        lifted = injector.restore(target) if target else injector.restore_all()
+    except ChaosDisabledError as exc:
+        raise _fail(str(exc)) from exc
+    if json_output:
+        _print_json({"lifted": [fault.as_dict() for fault in lifted]})
+        return
+    _out.print(f"lifted {len(lifted)}", markup=False)
+
+
+def _fault_line(fault: Fault) -> str:
+    parts = [f"{fault.target} ({fault.scope})"]
+    if fault.failure_class is not None:
+        parts.append(str(fault.failure_class))
+    if fault.latency_s:
+        parts.append(f"+{human_duration(fault.latency_s)}")
+    if fault.retry_after_s:
+        parts.append(f"Retry-After {human_duration(fault.retry_after_s)}")
+    if fault.until is not None:
+        parts.append(f"for {human_duration(max(fault.until - time.time(), 0.0))}")
+    return " ".join(parts)
 
 
 def main() -> None:
