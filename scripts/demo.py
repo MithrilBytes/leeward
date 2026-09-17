@@ -403,6 +403,23 @@ async def measure(scratch: Path) -> Measured:
     )
 
 
+REQUIRED = frozenset({"measured", "notes", "suite"})
+"""Regions the README must have. A note region per case is offered, not required."""
+
+
+def offered(filled: Mapping[str, str], text: str) -> dict[str, str]:
+    """What this run has to give, narrowed to what the file actually asks for.
+
+    A block is measured for every note the demo produced, and a README is free to show
+    one, three or none of them. The three that carry the argument are not optional.
+    """
+    present = {match["name"] for match in REGION.finditer(text)}
+    missing = REQUIRED - present
+    if missing:
+        raise ValueError(f"the file is missing required regions: {', '.join(sorted(missing))}")
+    return {name: block for name, block in filled.items() if name in present}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the demo cases and report the numbers.")
     parser.add_argument("--readme", type=Path, help="rewrite the demo regions of this file")
@@ -416,7 +433,8 @@ def main(argv: list[str] | None = None) -> int:
         for name, block in filled.items():
             print(f"<!-- demo:{name} -->\n{block}\n")
     else:
-        readme.write_text(fill(readme.read_text(encoding="utf-8"), filled), encoding="utf-8")
+        text = readme.read_text(encoding="utf-8")
+        readme.write_text(fill(text, offered(filled, text)), encoding="utf-8")
         print(f"rewrote the demo regions of {readme}")
     print(f"done in {time.monotonic() - started:.0f} s")
     return 0
