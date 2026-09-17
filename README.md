@@ -6,16 +6,11 @@ An agent that calls a tool and gets back `Error: request failed` cannot tell a t
 
 ## What it looks like
 
-The same small agent, twice, with its MCP server killed underneath it mid session. On the
-left it talks to the server directly. On the right it talks through `leeward wrap`. A local
-model, real processes, a real `SIGKILL`, one take. `make recording` reruns it.
+The same small agent, asked the same thing twice, with its MCP server killed underneath it in between. On the left it talks to the server directly. On the right it talks through `leeward wrap`. A local model, real processes, a real `SIGKILL`, one take.
 
 ![The same agent with and without leeward, its MCP server killed mid session](demo/leeward.svg)
 
-Without leeward the second call raises `MCPError: Connection closed` and the agent has
-nothing to say. With leeward the same call returns the last good answer as `STALE`, with a
-note saying the tool is gone and how old the copy is, and the agent answers the question and
-passes the caveat on.
+Without leeward, the second call raises `MCPError: Connection closed` and the agent has nothing to say. With leeward, the same call returns the last good answer marked `STALE`, with a note saying the tool is gone and how old the copy is. The agent answers the question and passes the caveat on. `make recording` reruns the whole thing.
 
 ## The failures it handles
 
@@ -27,7 +22,9 @@ passes the caveat on.
 
 ## Measured
 
-`make demo` arms each failure against the fakes in this repository and rewrites this table and the notes below from what came back. The HTTP cases run in process against a fake origin on a real socket. The MCP cases run `leeward wrap` and the fake server as separate processes, and the server drops a tool, hangs, or is killed with SIGKILL partway through. Attempts come from leeward's event log; "reached upstream" counts requests the origin read and tool calls the server ran, from the fakes' own counters.
+Every number below came from a run, not from prose. `make demo` arms each failure against the fakes in this repository and rewrites this table and the notes from what came back.
+
+The HTTP cases run in process against a fake origin on a real socket. The MCP cases run `leeward wrap` and the fake server as separate processes, and the server drops a tool, hangs, or is killed with `SIGKILL` partway through. Attempts come from leeward's own event log; "reached upstream" counts requests the origin read and tool calls the server ran, counted by the fakes themselves.
 
 <!-- demo:measured -->
 
@@ -36,41 +33,22 @@ Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.1.0, 2
 | Case | Result | Time | Attempts | Reached upstream |
 | --- | --- | --- | --- | --- |
 | Origin hangs after connecting | `DOWN{WEDGED}`, 504, `DO_NOT_RETRY` | 30.01 s | 2 | 2 |
-| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 0.8 ms | 0 | 0 |
-| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 5.7 ms | 1 | 1 |
-| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 1.4 ms | 0 | 0 |
-| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 113 ms | 2 | 0 |
+| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 0.9 ms | 0 | 0 |
+| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 5.4 ms | 1 | 1 |
+| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 0.7 ms | 0 | 0 |
+| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 105 ms | 2 | 0 |
 | MCP tool hangs | `DOWN{WEDGED}`, `isError`, `RETRY_AFTER` | 30.01 s | 1 | 1 |
-| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 9.7 ms | 1 | 0 |
-| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 3.4 ms | 1 | 0 |
-| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.2 ms | 0 | 0 |
-| Another tool on that server, next call | `FRESH`, `PROCEED` | 431 ms | 1 | 1 |
+| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 7.9 ms | 1 | 0 |
+| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 3.9 ms | 1 | 0 |
+| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.3 ms | 0 | 0 |
+| Another tool on that server, next call | `FRESH`, `PROCEED` | 430 ms | 1 | 1 |
 | `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 3.9 ms | 1 | 0 |
 
 <!-- /demo:measured -->
 
-### What it costs when nothing is wrong
-
-<!-- demo:overhead -->
-
-Measured over 200 calls each against a fake origin on loopback.
-
-| Path | p50 | p95 |
-| --- | --- | --- |
-| straight to the origin, no leeward | 0.33 ms | 0.51 ms |
-| through leeward, to the origin | 0.79 ms | 1.08 ms |
-| through leeward, answered from cache | 0.12 ms | 0.17 ms |
-
-leeward adds about 0.45 ms to a call it has to make, and answers from its own cache in 0.12 ms.
-
-<!-- /demo:overhead -->
-
-That is the whole proxy: policy, classification, the cache write and the event log, on
-loopback where the network is nearly free. `make overhead` reruns it.
-
 <!-- demo:suite -->
 
-The suite is 509 tests, 15 seconds on the machine above.
+The suite is 523 tests, 15 seconds on the machine above.
 
 <!-- /demo:suite -->
 
@@ -111,10 +89,6 @@ What changes is what a failure looks like:
 
 `leeward serve` runs the same machinery on a local port, and `leeward serve --json` reports where it listens as one JSON line. `leeward init` writes a starter `leeward.yaml`, and `leeward.example.yaml` has every setting with comments.
 
-`leeward warm` fills the cache from the corpora in the configuration before anything needs it: a list of URLs you wrote, a sitemap leeward reads itself, a local directory mapped onto the URLs it stands in for, or every resource an MCP server offers. With `follow_links` it also takes one hop from each page it fetched, on that page's own host and subject to robots.txt, since nobody wrote those links down. It is paced per host, capped in bytes, and resumable in the only way that cannot disagree with itself, by skipping whatever is already stored and fresh. `--dry-run` says what it would fetch and fetches nothing. robots.txt is consulted for URLs leeward discovered through a sitemap and not for a list you wrote down, and every warm event records which it was.
-
-`leeward doctor` checks the wiring: configuration, rules, data directory, note templates, the event log, and which MCP client configurations actually start a server through `leeward wrap`. `leeward report` adds up the event log into calls, outcomes, attempts, latencies and how many calls were answered without reaching anyone. `leeward cache ls|stats|pin|rm` shows and prunes what is stored, and `leeward chaos arm|ls|clear` makes a failure happen on purpose, which is how the table above is produced. All of them read local state and open no connection.
-
 **Everything else over HTTPS.** Turn on the forward proxy and point `HTTPS_PROXY` at it.
 
 ```yaml
@@ -147,6 +121,27 @@ surfaces: {fetch: {enabled: true, mounts: {wiki: "https://en.wikipedia.org"}}}
 
 `GET http://127.0.0.1:8787/wiki/wiki/Foo` fetches the article, with `X-Leeward-Outcome`, `Age` and the note on the response.
 
+## Commands
+
+Every command takes `--json`, and everything except `serve` and `wrap` reads local state and opens no connection, so they still answer during the outage they are describing.
+
+| | |
+| --- | --- |
+| `leeward wrap -- <command>` | Front one stdio MCP server. |
+| `leeward serve` | Run the surfaces on the ports in `leeward.yaml`. |
+| `leeward init` | Write a starter `leeward.yaml` and its data directory. |
+| `leeward classify <url\|server/tool>` | The policy for a call, and the rule that decided each part. |
+| `leeward forecast <url\|server/tool>` | What the next call would return, without making it. |
+| `leeward status` | Breakers, cache, runs, and what is currently degraded. |
+| `leeward report` | The event log added up: outcomes, attempts, latencies, what cost nothing. |
+| `leeward events [--follow]` | The log itself, line by line. |
+| `leeward doctor` | Configuration, data directory, templates, log, and which clients are wired. |
+| `leeward warm [corpus]` | Fill the cache from the configured corpora. `--dry-run` fetches nothing. |
+| `leeward cache ls\|stats\|pin\|rm` | What is stored, and pruning it. |
+| `leeward chaos arm\|ls\|clear` | Make a failure happen on purpose. Refused under the production profile. |
+
+`leeward warm` is the one worth explaining. A corpus is a list of URLs you wrote, a sitemap leeward reads itself, a local directory mapped onto the URLs it stands in for, or every resource an MCP server offers. With `follow_links` it takes one hop from each page it fetched, on that page's own host and subject to robots.txt, since nobody wrote those links down. It is paced per host, capped in bytes, and resumable in the only way that cannot disagree with itself, by skipping whatever is already stored and fresh. robots.txt is consulted for what leeward discovered and not for a list you wrote, and every warm event records which it was. A corpus can also carry a `schedule`, or `warm_on_degradation` so a run starts when something else goes down.
+
 ## What a note looks like
 
 Notes are what the model reads. They are capped at 400 characters, always prefixed, and never contain content from the origin. These three are verbatim from the run above.
@@ -154,7 +149,7 @@ Notes are what the model reads. They are capped at 400 characters, always prefix
 <!-- demo:notes -->
 
 ```text
-[leeward] STALE: served a copy stored 36ms ago because intel/incident_notes is
+[leeward] STALE: served a copy stored 35ms ago because intel/incident_notes is
 unreachable (TOOL_GONE). This endpoint is classified `volatile`, so the copy may be out
 of date. Check anything time-sensitive. Retrying will not help for the rest of this run.
 
@@ -179,7 +174,7 @@ Mark those endpoints `class: live` and leeward will never serve them from cache,
 <!-- demo:note-live -->
 
 ```text
-[leeward] DOWN: 127.0.0.1 returned nothing (CONNECT_REFUSED after 111ms, 2 attempts).
+[leeward] DOWN: 127.0.0.1 returned nothing (CONNECT_REFUSED after 103ms, 2 attempts).
 This endpoint is classified `live`: a cached value from 0s ago exists but is not being
 served, because only the current value is meaningful here. Treat this value as unknown
 and say so rather than estimating it.
@@ -196,11 +191,27 @@ Deterministically, and it will show its work. There is no model in the data path
 - **Classification.** Nineteen failure classes, each derived from evidence rather than from a string match on the exception: DNS response codes, refused connections, TLS validation with a clock check, deadlines, HTTP status with rate limit headers, JSON-RPC codes, tool listings. `leeward classify <url|server/tool>` prints the policy and the rule that decided each part, without touching the network.
 - **Disposition.** Every failure is `TRANSIENT`, `WAIT`, `NEVER` or `UNKNOWN`, with a scope: this request, this endpoint, this host, this run. A `NEVER` is remembered at its scope, so one refusal answers the rest of the run.
 - **Attempts.** Exponential backoff with decorrelated jitter, a hedge at the soft deadline for calls that are safe to duplicate, and a per run budget on retries that cannot be exceeded.
-- **Size.** The store keeps to `cache.max_bytes`, two gigabytes by default, dropping least recently used first and pinned entries only when nothing else is left, which it says out loud in the log.
-- **Cache.** The subset of RFC 9111 that matters here, plus `stale-if-error` and `stale-while-revalidate` from RFC 5861, with per class limits on how old a copy may be. Bodies are content addressed and checked against their hash on read. Identical requests in flight collapse into one.
+- **Cache.** The subset of RFC 9111 that matters here, plus `stale-if-error` and `stale-while-revalidate` from RFC 5861, with per class limits on how old a copy may be. Bodies are content addressed and checked against their hash on read. Identical calls in flight collapse into one, whether they are HTTP requests or MCP tool calls.
+- **Bounds.** The store keeps to `cache.max_bytes`, two gigabytes by default, dropping least recently used first and pinned entries only when nothing else is left, which it says in the log. The event log keeps `events.keep_days`, fourteen by default, and prunes as it rolls over. Neither store grows until the disk does.
 - **Breakers.** Per endpoint and per host, opened immediately by a `NEVER`, with half open backoff. A short circuit reports the original failure class, not a generic one.
 
 Every outcome is an event in a JSONL log with credentials redacted, and `/leeward/status` and `/leeward/forecast` answer from local state, so they still work when everything they describe is unreachable.
+
+The cost of standing in the way, measured the same way as everything else:
+
+<!-- demo:overhead -->
+
+Measured over 200 calls each against a fake origin on loopback.
+
+| Path | p50 | p95 |
+| --- | --- | --- |
+| straight to the origin, no leeward | 0.33 ms | 0.45 ms |
+| through leeward, to the origin | 0.75 ms | 1.08 ms |
+| through leeward, answered from cache | 0.12 ms | 0.15 ms |
+
+leeward adds about 0.42 ms to a call it has to make, and answers from its own cache in 0.12 ms.
+
+<!-- /demo:overhead -->
 
 ## Prior art
 
@@ -220,7 +231,7 @@ leeward is released on GitHub rather than PyPI, and needs Python 3.11 or later.
 
 ```bash
 python3 -m venv ~/.venvs/leeward
-~/.venvs/leeward/bin/pip install git+https://github.com/MithrilBytes/leeward@v0.1.0
+~/.venvs/leeward/bin/pip install git+https://github.com/MithrilBytes/leeward@v0.2.0
 ~/.venvs/leeward/bin/leeward --version
 ```
 
@@ -232,6 +243,7 @@ From a checkout, with `PYTHON=python3.11` or similar if `python3.13` is not the 
 make install    # .venv with the pinned development dependencies
 make check      # lint, types and the test suite
 make demo       # rerun the measured cases and rewrite them in this file
+make overhead   # remeasure what leeward costs per call
 make dist       # build the sdist and wheel, then install and run the wheel in a new environment
 ```
 
