@@ -12,6 +12,7 @@ state, so they still work when everything they describe is unreachable.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
 
@@ -83,10 +84,29 @@ def listen_address(loaded: LoadedConfig) -> tuple[str, int]:
 
 
 async def run(loaded: LoadedConfig) -> None:
-    """Run the proxy until it is stopped."""
+    """Run the proxy until it is stopped.
+
+    The forward proxy gets a port of its own because it is a different kind of server:
+    it tunnels rather than answers, and a client points `HTTPS_PROXY` at it.
+    """
+    from leeward.surfaces.forward import ForwardProxy
+
     proxy = Proxy(loaded)
     host, port = listen_address(loaded)
     config = uvicorn.Config(
         build_app(proxy), host=host, port=port, log_level="warning", access_log=False
     )
-    await uvicorn.Server(config).serve()
+    shared = uvicorn.Server(config)
+    forward = loaded.config.surfaces.forward
+    if not forward.enabled:
+        await shared.serve()
+        return
+    tunnel = ForwardProxy(proxy)
+    tunnel_host, _, tunnel_port = forward.listen.rpartition(":")
+    await tunnel.start(tunnel_host, int(tunnel_port))
+    try:
+        async with asyncio.TaskGroup() as group:
+            group.create_task(shared.serve())
+            group.create_task(tunnel.serve_forever())
+    finally:
+        await tunnel.aclose()
