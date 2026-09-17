@@ -64,6 +64,13 @@ QUOTA_CODES = frozenset(
 
 _GO_DURATION = re.compile(r"([0-9]+(?:\.[0-9]+)?)(ms|h|m|s)")
 _GO_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+_INVALID_ARGUMENTS = re.compile(
+    r"invalid (?:tool )?(?:arguments|parameters|params|input)"
+    r"|input validation error"
+    r"|rejected arguments"
+    r"|validation errors? for \w*[Aa]rguments",
+    re.IGNORECASE,
+)
 _UNKNOWN_TOOL = re.compile(r"unknown tool|tool .* not found|no such tool", re.IGNORECASE)
 
 
@@ -481,6 +488,16 @@ def _wedged(deadline_s: float, snapshot: RunSnapshot, *, injected: bool = False)
         f"no completion within the {_seconds(deadline_s)} hard deadline, connection open",
         injected=injected,
     )
+
+
+def invalid_arguments(message: str) -> bool:
+    """Whether a server is saying the call's arguments do not fit the tool.
+
+    Deliberately narrow: it matches the wording MCP frameworks generate when they
+    refuse a call, not any text containing the word validation, since a tool whose
+    own job is validation will say that in a perfectly successful answer.
+    """
+    return _INVALID_ARGUMENTS.search(message) is not None
 
 
 def unknown_tool(message: str) -> bool:

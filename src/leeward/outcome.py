@@ -205,6 +205,7 @@ def build(
     known_failure: FailureClass | None = None,
     now: float = 0.0,
     clock_is_wrong: bool = False,
+    schema_changed: bool = False,
 ) -> CallOutcome:
     """Assemble an outcome from what the engine did and what the cache decided."""
     classification = report.classification if report is not None and not report.ok else None
@@ -261,6 +262,7 @@ def build(
             server_name=_server_name(policy),
             soft_deadline_s=policy.soft_deadline_s,
             clock_is_wrong=clock_is_wrong,
+            schema_changed=schema_changed,
             advice=advice,
         )
     )

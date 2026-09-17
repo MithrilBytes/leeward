@@ -23,6 +23,7 @@ from mcp.client.stdio import StdioServerParameters
 from mcp.shared.exceptions import MCPError
 from mcp_types import CONNECTION_CLOSED, CallToolResult, TextContent, Tool
 
+from leeward.canonical import canonical_sha256
 from leeward.classify import (
     CLASSIFY_SAMPLE_BYTES,
     JSONRPC_INTERNAL_ERROR,
@@ -30,6 +31,7 @@ from leeward.classify import (
     Response,
     ToolAbsent,
     ToolError,
+    invalid_arguments,
     unknown_tool,
 )
 from leeward.config import HttpServer, StdioServer
@@ -43,6 +45,15 @@ cannot keep a listing open."""
 
 CONFIRM_CLOSED_S = 1.0
 """The longest the request confirming a closed connection may take, within the call's deadline."""
+
+
+def shape_of(tool: Tool) -> str:
+    """A tool's call signature, as a hash, so a change to it can be recognised.
+
+    Only what a caller has to get right is in here. A reworded description is not a
+    different tool; a renamed or retyped argument is.
+    """
+    return canonical_sha256([tool.input_schema, tool.output_schema])
 
 
 class Upstream:
@@ -65,6 +76,9 @@ class Upstream:
         self.known_tools: set[str] = set()
         self.seen_tools: set[str] = set()
         self.gone: set[str] = set()
+        self.changed: set[str] = set()
+        self.drifted: set[str] = set()
+        self.shapes: dict[str, str] = {}
         self.output_schemas: dict[str, dict[str, Any] | None] = {}
         """Each listed tool's declared output schema, or None where it declares none."""
         self._environment = environment if environment is not None else os.environ
@@ -140,6 +154,14 @@ class Upstream:
                 break
         names = {tool.name for tool in listed}
         complete = cursor is None
+        shapes = {tool.name: shape_of(tool) for tool in listed}
+        self.changed = {
+            name
+            for name, shape in shapes.items()
+            if name in self.shapes and self.shapes[name] != shape
+        }
+        self.drifted |= self.changed
+        self.shapes = shapes if complete else {**self.shapes, **shapes}
         self.gone = self.known_tools - names if complete else set()
         self.known_tools = names if complete else self.known_tools | names
         schemas = {tool.name: tool.output_schema for tool in listed}
@@ -278,6 +300,10 @@ class ToolCaller:
         tools/list before it is believed.
         """
         message = describe(result) or "the tool reported an error"
+        if invalid_arguments(message) and not unknown_tool(message):
+            return self._failed(
+                ToolError(code=JSONRPC_INVALID_PARAMS, message=message, listed_before=True), started
+            )
         if not unknown_tool(message):
             return self._failed(
                 ToolError(code=JSONRPC_INTERNAL_ERROR, message=message, listed_before=True), started
