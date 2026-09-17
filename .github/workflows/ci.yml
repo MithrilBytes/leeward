@@ -74,3 +74,11 @@ jobs:
 
       - name: test
         run: time make test
+
+      # The wheel is built from the sdist and run from a new environment, so a file
+      # that fails to ship, or one that should not, fails here rather than after a
+      # release.
+      - name: dist
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
+        run: time make dist PYTHON="$PYTHON"
