@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fakes.origin import FakeOrigin, Reply, constant, document
@@ -251,3 +252,122 @@ async def test_a_directory_corpus_stays_inside_the_directory(tmp_path: Path) -> 
 
     assert result.fetched == 1
     assert escaped is None
+
+
+MCP_CORPUS = """
+profile: dev
+data_dir: {data}
+surfaces:
+  mcp:
+    enabled: true
+    listen: 127.0.0.1:8787
+    servers:
+      notes:
+        transport: stdio
+        command: ["python", "-m", "fakes.mcp_server"]
+rules:
+  - name: notes
+    match: {{tool: "notes/*"}}
+    class: slow
+    stale_on_error: 7d
+corpora:
+  - name: handbook
+    type: mcp_resources
+    server: notes
+"""
+
+
+async def test_an_mcp_resource_corpus_keeps_what_the_server_offers(tmp_path: Path) -> None:
+    """Warming resources and serving them are the same cache, so one fills the other."""
+    from fakes.mcp_server import build_server
+    from mcp.client.client import Client
+
+    from leeward.cache.store import resource_key
+    from leeward.surfaces.mcp import ServerFront, Upstream
+    from leeward.warm import Warmer
+
+    loaded = parse_config(MCP_CORPUS.format(data=tmp_path / "data"), tmp_path / "leeward.yaml")
+    proxy = Proxy(loaded)
+    server, _journal = build_server()
+    reads: list[str] = []
+
+    @server.resource("notes://handbook")
+    def handbook() -> str:
+        reads.append("read")
+        return "what to do in a blackout"
+
+    fronted = Upstream("notes", loaded.config.surfaces.mcp.servers["notes"], server=server)
+    warmer = Warmer(proxy)
+    warmer._upstreams["notes"] = fronted  # the same in-process server the front will use
+    corpus = proxy.config.corpora[0]
+
+    # The fake offers an index as well as the handbook, and both are kept.
+    result = await warmer.warm(corpus)
+    assert (result.fetched, result.failed) == (2, 0)
+    assert reads == ["read"]
+    assert proxy.cache.get(resource_key("notes", "notes://handbook"), proxy.clock()) is not None
+
+    # A client reading it now is served from what the warm run stored, without the server.
+    async with Client(ServerFront(proxy, fronted)) as client:
+        served = await client.read_resource("notes://handbook")
+    text = cast("Any", served.contents[0]).text
+
+    again = await warmer.warm(corpus)
+    await warmer.aclose()
+    await proxy.aclose()
+
+    assert text == "what to do in a blackout"
+    assert reads == ["read"], "the read came from the cache, not the server"
+    assert (again.fetched, again.already_fresh) == (0, 2)
+
+
+LINKED = """
+profile: dev
+data_dir: {data}
+rules:
+  - name: articles
+    match: {{url: "*/wiki/*"}}
+    class: static
+    stale_on_error: 30d
+corpora:
+  - name: seeds
+    type: url_list
+    urls: [{origin}/hub/Blackout]
+    follow_links: true
+    rps: 50
+"""
+
+PAGE = b"""<html><body>
+  <a href="/hub/Grid">the grid</a>
+  <a href="/hub/Grid#history">the same page again</a>
+  <a href="/private/secret">not for robots</a>
+  <a href="https://elsewhere.test/wiki/Other">another host</a>
+  <a href="mailto:someone@example.test">not a page</a>
+</body></html>"""
+
+
+async def test_following_links_takes_one_hop_on_one_host_and_obeys_robots(
+    tmp_path: Path, origin: FakeOrigin
+) -> None:
+    origin.route("/hub/*", document(PAGE, cache_control="max-age=600"))
+    loaded = parse_config(
+        LINKED.format(data=tmp_path / "data", origin=origin.base_url), tmp_path / "leeward.yaml"
+    )
+    proxy = Proxy(loaded)
+    [result] = await warm_all(proxy, ["seeds"])
+    await proxy.aclose()
+
+    # The seed, plus the one link that is on this host and allowed.
+    assert result.fetched == 2
+    assert result.linked == 1
+    assert origin.hits["/hub/Grid"] == 1
+    assert "/private/secret" not in origin.hits
+    assert "elsewhere.test" not in str(origin.hits)
+
+
+def test_links_are_read_from_a_page_and_kept_to_its_host() -> None:
+    from leeward.warm import links_in
+
+    found = links_in(PAGE, "https://docs.test/hub/Blackout")
+    assert found == {"https://docs.test/hub/Grid", "https://docs.test/private/secret"}
+    assert links_in(b"not html at all", "https://docs.test/x") == set()

@@ -23,13 +23,16 @@ import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
+from mcp.shared.exceptions import MCPError
+
 from leeward import __version__
-from leeward.cache.store import cache_key
+from leeward.cache.store import cache_key, resource_key
 from leeward.config import (
     Corpus,
     DirectoryCorpus,
@@ -41,14 +44,21 @@ from leeward.config import (
 from leeward.events import EventFields, RunRef, WarmInfo
 from leeward.policy import CallTarget, resolve
 from leeward.proxy import HttpRequest, Proxy
+from leeward.surfaces.mcp import RESOURCE_ENDPOINT
+from leeward.surfaces.upstream import Upstream
 from leeward.vocab import Outcome, Surface
 
 Trigger = Literal["cli", "schedule", "degradation", "link_prefetch"]
+
+MAX_LIST_PAGES = 50
+"""Pages of a resource listing leeward will follow, matching the MCP front's limit."""
 
 MAX_SITEMAP_BYTES = 8 * 1024 * 1024
 """A sitemap larger than this is not one leeward is going to read in one piece."""
 
 MAX_URLS = 50_000
+MAX_PAGE_BYTES = 4 * 1024 * 1024
+"""How much of a page leeward reads looking for links."""
 
 KNOWN_TYPES = {
     ".md": "text/markdown",
@@ -94,6 +104,7 @@ class Result:
     robots_skipped: bool = False
     dry_run: bool = False
     stopped_at_cap: bool = False
+    linked: int = 0
     unsupported: str = ""
     failures: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
 
@@ -119,6 +130,7 @@ class Result:
             "robots_skipped": self.robots_skipped,
             "dry_run": self.dry_run,
             "stopped_at_cap": self.stopped_at_cap,
+            "linked": self.linked,
             "unsupported": self.unsupported or None,
             "failures": [{"url": url, "reason": reason} for url, reason in self.failures],
         }
@@ -150,6 +162,7 @@ class Warmer:
         self.user_agent = proxy.config.warm.user_agent or f"leeward/{__version__}"
         self._pace: dict[str, Pace] = {}
         self._robots: dict[str, RobotFileParser | None] = {}
+        self._upstreams: dict[str, Upstream] = {}
 
     def corpora(self, names: Sequence[str] = ()) -> list[Corpus]:
         """The corpora asked for, or all of them, in configuration order."""
@@ -173,6 +186,8 @@ class Warmer:
             return await self._from_sitemap(corpus, run)
         if isinstance(corpus, DirectoryCorpus):
             return Plan(corpus.name, self._files(corpus), robots_skipped=True)
+        if isinstance(corpus, McpResourcesCorpus):
+            return await self._from_mcp(corpus)
         kind = type(corpus).__name__.removesuffix("Corpus").lower()
         return Plan(corpus.name, (), unsupported=kind)
 
@@ -189,6 +204,71 @@ class Warmer:
                 if line.strip() and not line.startswith("#")
             ]
         return tuple(dict.fromkeys(urls))[:MAX_URLS]
+
+    def _upstream(self, server: str) -> Upstream:
+        """The configured MCP server by name, opened once and closed with the warmer."""
+        if server not in self._upstreams:
+            spec = self.proxy.config.surfaces.mcp.servers.get(server)
+            if spec is None:
+                raise KeyError(server)
+            self._upstreams[server] = Upstream(server, spec)
+        return self._upstreams[server]
+
+    async def _from_mcp(self, corpus: McpResourcesCorpus) -> Plan:
+        """Every resource a server offers, by URI. robots has nothing to say about MCP."""
+        upstream = self._upstream(corpus.server)
+        client = await upstream.client()
+        if client.server_capabilities.resources is None:
+            return Plan(corpus.name, (), robots_skipped=True)
+        uris: list[str] = []
+        cursor: str | None = None
+        for _ in range(MAX_LIST_PAGES):
+            page = await client.list_resources(cursor=cursor, cache_mode="refresh")
+            uris += [str(resource.uri) for resource in page.resources]
+            cursor = page.next_cursor
+            if cursor is None or len(uris) >= MAX_URLS:
+                break
+        return Plan(corpus.name, tuple(dict.fromkeys(uris))[:MAX_URLS], robots_skipped=True)
+
+    async def _store_resources(
+        self, corpus: McpResourcesCorpus, plan: Plan, result: Result, cap: int | None
+    ) -> None:
+        """Read each resource once and keep it, so the server may go away afterwards."""
+        upstream = self._upstream(corpus.server)
+        policy = resolve(self.proxy.config, CallTarget.tool(corpus.server, RESOURCE_ENDPOINT))
+        client = await upstream.client()
+        for uri in plan.urls:
+            now = self.proxy.clock()
+            key = resource_key(corpus.server, uri)
+            if self.proxy.cache.get(key, now) is not None:
+                result.already_fresh += 1
+                continue
+            try:
+                read = await client.read_resource(uri, cache_mode="bypass")
+            except (MCPError, ConnectionError, BrokenPipeError, EOFError, OSError) as error:
+                result.failed += 1
+                result.failures.append((uri, f"{type(error).__name__}: {error}"))
+                continue
+            body = read.model_dump_json(by_alias=True).encode("utf-8")
+            self.proxy.cache.put(
+                key=key,
+                url=f"mcp://{corpus.server}/{uri}",
+                method="RESOURCE",
+                endpoint=policy.endpoint,
+                status=200,
+                headers=(),
+                body=body,
+                requested_at=now,
+                received_at=self.proxy.clock(),
+                volatility=policy.volatility,
+                now=self.proxy.clock(),
+                pinned=True,
+            )
+            result.fetched += 1
+            result.bytes += len(body)
+            if cap is not None and result.bytes >= cap:
+                result.stopped_at_cap = True
+                return
 
     def _files(self, corpus: DirectoryCorpus) -> tuple[str, ...]:
         """Local files, as the URLs they stand in for.
@@ -292,6 +372,10 @@ class Warmer:
             return result
 
         cap = corpus.max_bytes
+        if isinstance(corpus, McpResourcesCorpus):
+            await self._store_resources(corpus, plan, result, cap)
+            self._record(result, run)
+            return result
         if isinstance(corpus, DirectoryCorpus):
             self._store_files(corpus, plan, result, cap)
             self._record(result, run)
@@ -299,20 +383,31 @@ class Warmer:
 
         gate = asyncio.Semaphore(corpus.concurrency)
         stop = asyncio.Event()
+        found: set[str] = set()
 
-        async def one(url: str) -> None:
+        async def one(url: str, *, follow: bool) -> None:
             if stop.is_set():
                 return
             async with gate:
                 if stop.is_set():
                     return
                 await self._pace_for(url, corpus.rps).wait()
-                await self._fetch_one(url, run, result)
+                body = await self._fetch_one(url, run, result)
+                if follow and body:
+                    found.update(links_in(body, url))
                 if cap is not None and result.bytes >= cap:
                     result.stopped_at_cap = True
                     stop.set()
 
-        await asyncio.gather(*(one(url) for url in plan.urls))
+        await asyncio.gather(*(one(url, follow=corpus.follow_links) for url in plan.urls))
+
+        # One hop, and no further. Links leeward found itself are subject to robots.txt
+        # whatever the seed list was, since nobody wrote them down.
+        pending = sorted(found - set(plan.urls))
+        if pending and not stop.is_set():
+            allowed = [url for url in pending if await self._robots_allow(url, run)]
+            await asyncio.gather(*(one(url, follow=False) for url in allowed[:MAX_URLS]))
+            result.linked = len(allowed)
         self._record(result, run)
         return result
 
@@ -365,7 +460,8 @@ class Warmer:
                 result.stopped_at_cap = True
                 return
 
-    async def _fetch_one(self, url: str, run: RunRef, result: Result) -> None:
+    async def _fetch_one(self, url: str, run: RunRef, result: Result) -> bytes:
+        """Fetch one URL through the proxy, and hand back the body for link following."""
         key = cache_key("GET", url)
         before = self.proxy.cache.get(key, self.proxy.clock())
         try:
@@ -377,26 +473,33 @@ class Warmer:
         except (OSError, ValueError) as error:
             result.failed += 1
             result.failures.append((url, f"{type(error).__name__}: {error}"))
-            return
+            return b""
         if served.outcome.outcome is Outcome.DOWN:
             result.failed += 1
             failure = served.outcome.failure
             result.failures.append((url, str(failure.failure_class) if failure else "DOWN"))
-            return
+            return b""
         if before is not None and served.from_cache:
             result.already_fresh += 1
-            return
+            return served.body
         result.fetched += 1
         result.bytes += len(served.body)
         # Warmed entries are what an operator asked to have on hand, so eviction takes
         # them last.
         self.proxy.cache.pin(key, True)
+        return served.body
 
     def _pace_for(self, url: str, rps: float) -> Pace:
         host = urlsplit(url).netloc
         if host not in self._pace:
             self._pace[host] = Pace(rps)
         return self._pace[host]
+
+    async def aclose(self) -> None:
+        """Close any MCP server this run opened."""
+        for upstream in self._upstreams.values():
+            await upstream.aclose()
+        self._upstreams.clear()
 
     def _record(self, result: Result, run: RunRef) -> None:
         self.proxy.events.emit(
@@ -418,7 +521,47 @@ async def warm_all(
 ) -> list[Result]:
     """Every corpus asked for, one after another, so hosts are not warmed in parallel."""
     warmer = Warmer(proxy, trigger=trigger)
-    return [await warmer.warm(corpus, dry_run=dry_run) for corpus in warmer.corpora(names)]
+    try:
+        return [await warmer.warm(corpus, dry_run=dry_run) for corpus in warmer.corpora(names)]
+    finally:
+        await warmer.aclose()
+
+
+class _Links(HTMLParser):
+    """Every href on a page, in the order they appear."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.found: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a":
+            return
+        for name, value in attrs:
+            if name == "href" and value:
+                self.found.append(value)
+
+
+def links_in(body: bytes, page: str) -> set[str]:
+    """Links on a page that belong to the same host it came from.
+
+    Read with the standard library's HTML parser rather than a pattern, since the point
+    is to find anchors and not to be clever about markup. Off-host links are left alone:
+    following them would turn one corpus into a crawl of the web.
+    """
+    parser = _Links()
+    try:
+        parser.feed(body[:MAX_PAGE_BYTES].decode("utf-8", "replace"))
+    except (AssertionError, ValueError):
+        return set()
+    here = urlsplit(page)
+    found: set[str] = set()
+    for href in parser.found:
+        joined = urljoin(page, href)
+        parts = urlsplit(joined)
+        if parts.scheme in ("http", "https") and parts.netloc == here.netloc:
+            found.add(urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, "")))
+    return found
 
 
 def content_type(path: Path) -> str:
@@ -432,7 +575,7 @@ def content_type(path: Path) -> str:
 
 def unsupported_kinds(corpora: Iterable[Corpus]) -> list[str]:
     """Corpus types configured but not implemented, so a caller can say so up front."""
-    kinds = {ZimCorpus: "zim", McpResourcesCorpus: "mcp_resources"}
+    kinds = {ZimCorpus: "zim"}
     return sorted(
         {name for corpus in corpora for kind, name in kinds.items() if isinstance(corpus, kind)}
     )
