@@ -36,22 +36,22 @@ Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.1.0, 2
 | Case | Result | Time | Attempts | Reached upstream |
 | --- | --- | --- | --- | --- |
 | Origin hangs after connecting | `DOWN{WEDGED}`, 504, `DO_NOT_RETRY` | 30.01 s | 2 | 2 |
-| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 1.0 ms | 0 | 0 |
-| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 5.8 ms | 1 | 1 |
-| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 0.9 ms | 0 | 0 |
-| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 108 ms | 2 | 0 |
+| Same endpoint, next call | `DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY` | 1.2 ms | 0 | 0 |
+| 429 with `Retry-After: 3600` | `DOWN{QUOTA_EXHAUSTED}`, 503, `DO_NOT_RETRY` | 6.0 ms | 1 | 1 |
+| Static page, origin down | `STALE`, 200, `PROCEED_WITH_CAUTION` | 1.3 ms | 0 | 0 |
+| Live endpoint, origin down | `DOWN{CONNECT_REFUSED}`, 503, `TREAT_AS_UNKNOWN` | 107 ms | 2 | 0 |
 | MCP tool hangs | `DOWN{WEDGED}`, `isError`, `RETRY_AFTER` | 30.02 s | 1 | 1 |
-| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 9.6 ms | 1 | 0 |
-| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 3.7 ms | 1 | 0 |
-| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.1 ms | 0 | 0 |
-| Another tool on that server, next call | `FRESH`, `PROCEED` | 441 ms | 1 | 1 |
-| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 3.6 ms | 1 | 0 |
+| MCP tool removed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 9.2 ms | 1 | 0 |
+| MCP server killed mid session | `DOWN{TOOL_GONE}`, `isError`, `DO_NOT_RETRY` | 3.5 ms | 1 | 0 |
+| Same tool, next call | `DOWN{BREAKER_OPEN}` carrying `TOOL_GONE`, `isError`, `DO_NOT_RETRY` | 1.2 ms | 0 | 0 |
+| Another tool on that server, next call | `FRESH`, `PROCEED` | 423 ms | 1 | 1 |
+| `--cache` tool, server killed | `STALE`, `PROCEED_WITH_CAUTION` | 3.7 ms | 1 | 0 |
 
 <!-- /demo:measured -->
 
 <!-- demo:suite -->
 
-The suite is 465 tests, 13 seconds on the machine above.
+The suite is 483 tests, 13 seconds on the machine above.
 
 <!-- /demo:suite -->
 
@@ -91,6 +91,8 @@ What changes is what a failure looks like:
 
 `leeward serve` runs the same machinery on a local port, and `leeward serve --json` reports where it listens as one JSON line. `leeward init` writes a starter `leeward.yaml`, and `leeward.example.yaml` has every setting with comments.
 
+`leeward warm` fills the cache from the corpora in the configuration before anything needs it: a list of URLs you wrote, or a sitemap leeward reads itself. It is paced per host, capped in bytes, and resumable in the only way that cannot disagree with itself, by skipping whatever is already stored and fresh. `--dry-run` says what it would fetch and fetches nothing. robots.txt is consulted for URLs leeward discovered through a sitemap and not for a list you wrote down, and every warm event records which it was.
+
 `leeward doctor` checks the wiring: configuration, rules, data directory, note templates, the event log, and which MCP client configurations actually start a server through `leeward wrap`. `leeward report` adds up the event log into calls, outcomes, attempts, latencies and how many calls were answered without reaching anyone. `leeward cache ls|stats|pin|rm` shows and prunes what is stored, and `leeward chaos arm|ls|clear` makes a failure happen on purpose, which is how the table above is produced. All of them read local state and open no connection.
 
 **Everything else over HTTPS.** Turn on the forward proxy and point `HTTPS_PROXY` at it.
@@ -100,6 +102,14 @@ surfaces: {forward: {enabled: true, listen: "127.0.0.1:8788"}}
 ```
 
 `HTTPS_PROXY=http://127.0.0.1:8788` sends any client's HTTPS through leeward. A tunnel is opaque, so this mode owns the deadline, classifies DNS and connect failures and remembers them per host, and answers a failed tunnel with the outcome as JSON. It cannot cache, and it says so once per endpoint per run.
+
+**Model calls.** Give a client an OpenAI compatible base URL and it goes out through the same engine, with tiers tried in order.
+
+```yaml
+surfaces: {llm: {enabled: true, tiers: [{name: primary, base_url: "https://api.example.com/v1", model: some-model, api_key_env: LLM_API_KEY}, {name: local, base_url: "http://127.0.0.1:11434/v1", model: "qwen2.5:7b-instruct-q4_K_M"}]}}
+```
+
+Point the client at `http://127.0.0.1:8787/v1`. A failure arrives in the provider's own error shape, with leeward's note as the message and the whole outcome under `error.leeward`, so a client library parses it rather than choking on it. The answer says which tier produced it, and which tiers it fell through on the way. Keys are read from the environment, never from the file. Model calls are not cached, and streaming is refused rather than proxied blindly.
 
 **MCP servers over HTTP.** Each configured server gets its own path, with the same tool names.
 
@@ -124,7 +134,7 @@ Notes are what the model reads. They are capped at 400 characters, always prefix
 <!-- demo:notes -->
 
 ```text
-[leeward] STALE: served a copy stored 35ms ago because intel/incident_notes is
+[leeward] STALE: served a copy stored 33ms ago because intel/incident_notes is
 unreachable (TOOL_GONE). This endpoint is classified `volatile`, so the copy may be out
 of date. Check anything time-sensitive. Retrying will not help for the rest of this run.
 
@@ -206,12 +216,12 @@ make dist       # build the sdist and wheel, then install and run the wheel in a
 
 ## Status
 
-`leeward wrap` fronts a stdio MCP server, `leeward serve` runs MCP servers over HTTP and HTTP tools on one port and a CONNECT proxy on another, and `report`, `doctor`, `cache`, `chaos`, `classify` and `events` read and prod local state. Underneath: the classifier, breakers, run budgets, deadlines, the cache and its freshness rules, notes and outcomes, the event log, and `/leeward/status` and `/leeward/forecast`. Tested on Linux and macOS with Python 3.11 and 3.13.
+`leeward wrap` fronts a stdio MCP server. `leeward serve` runs MCP servers over HTTP, HTTP tools and an OpenAI compatible model endpoint on one port, and a CONNECT proxy on another. `warm` fills the cache ahead of an outage, and `report`, `doctor`, `cache`, `chaos`, `classify` and `events` read and prod local state. Underneath: the classifier, breakers, run budgets, deadlines, the cache and its freshness rules, notes and outcomes, the event log, and `/leeward/status` and `/leeward/forecast`. Tested on Linux and macOS with Python 3.11 and 3.13.
 
 Not built yet:
 
-- An OpenAI compatible endpoint for model calls, with failover between tiers.
-- A warmer that fills the cache before an outage.
+- Streaming completions through the model surface.
+- `zim`, `directory` and `mcp_resources` corpora. `url_list` and `sitemap` work.
 
 Known limits:
 
