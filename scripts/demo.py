@@ -209,7 +209,9 @@ class Session:
         return len(self.journal.read_text().splitlines()) if self.journal.exists() else 0
 
     def kill_server(self) -> None:
-        os.kill(int(self.pid_file.read_text(encoding="utf-8")), signal.SIGKILL)
+        pid = int(self.pid_file.read_text(encoding="utf-8"))
+        # Windows has no SIGKILL, and terminating a process there is already ungraceful.
+        os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 @asynccontextmanager

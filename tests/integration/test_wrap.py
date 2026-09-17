@@ -48,6 +48,15 @@ def origin_content(result: CallToolResult) -> list[str]:
     ]
 
 
+def kill_outright(pid: int) -> None:
+    """End a process without giving it a chance to tidy up.
+
+    Windows has no SIGKILL; terminating a process there is already ungraceful, which
+    is what these tests and the demo are after.
+    """
+    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+
+
 def pid_in(path: Path) -> int:
     return int(path.read_text(encoding="utf-8"))
 
@@ -141,7 +150,7 @@ async def test_a_killed_server_costs_one_refusal_and_the_rest_carry_on(
     async with asyncio.timeout(SESSION_LIMIT_S), wrapped() as client:
         await client.call_tool("incident_notes", {"query": "blackout"})
         first = pid_in(pid_file)
-        os.kill(first, signal.SIGKILL)
+        kill_outright(first)
         refused = await client.call_tool("incident_notes", {"query": "brownout"})
         again = await client.call_tool("incident_notes", {"query": "brownout"})
         other = await client.call_tool("threat_intel_lookup", {"ioc": "198.51.100.4"})
@@ -179,7 +188,7 @@ async def test_a_cached_tool_answers_with_its_last_result_after_the_server_dies(
 ) -> None:
     async with asyncio.timeout(SESSION_LIMIT_S), wrapped("--cache", "incident_notes") as client:
         fresh = await client.call_tool("incident_notes", {"query": "blackout"})
-        os.kill(pid_in(pid_file), signal.SIGKILL)
+        kill_outright(pid_in(pid_file))
         stale = await client.call_tool("incident_notes", {"query": "blackout"})
 
     assert not stale.is_error
