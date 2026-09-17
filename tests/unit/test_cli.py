@@ -118,7 +118,7 @@ def test_wrap_refuses_a_name_that_cannot_name_an_endpoint(workdir: Path) -> None
 
 
 def test_serve_refuses_an_invalid_config_before_listening(workdir: Path) -> None:
-    (workdir / "leeward.yaml").write_text("surfaces:\n  fetch:\n    listen: nowhere\n")
+    (workdir / "leeward.yaml").write_text("surfaces:\n  listen: nowhere\n")
     result = runner.invoke(app, ["serve"])
     assert result.exit_code == 2
     assert "is not host:port" in result.output

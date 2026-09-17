@@ -24,7 +24,6 @@ data_dir: {data}
 surfaces:
   llm:
     enabled: true
-    listen: 127.0.0.1:8787
     tiers:
       - name: primary
         base_url: {primary}/v1
@@ -37,7 +36,6 @@ surfaces:
       enabled: {status_line}
   fetch:
     enabled: true
-    listen: 127.0.0.1:8787
     mounts:
       origin: {primary}
 rules:

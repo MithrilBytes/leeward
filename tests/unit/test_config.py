@@ -45,9 +45,9 @@ def test_the_starter_configuration_is_valid() -> None:
         ("rules:\n  - match: {url: '*'}\n    stale_on_error: 0\n", "expected a duration string"),
         ("profile: production\nchaos: {enabled: true}\n", "while profile is production"),
         (
-            "surfaces:\n  fetch: {enabled: true, listen: '127.0.0.1:8787'}\n"
-            "  llm: {enabled: true, listen: '127.0.0.1:9999'}\n",
-            "share one listener",
+            "surfaces:\n  listen: '127.0.0.1:8787'\n"
+            "  forward: {enabled: true, listen: '127.0.0.1:8787'}\n",
+            "must differ from surfaces.listen",
         ),
         ("surfaces:\n  fetch:\n    mounts: {v1: 'https://example.com'}\n", "reserved or invalid"),
         (
@@ -81,7 +81,7 @@ def test_a_secret_written_into_configuration_is_refused(text: str) -> None:
 def test_a_secret_named_by_environment_variable_is_accepted() -> None:
     text = (
         "surfaces:\n  mcp:\n    servers:\n      gh:\n        transport: http\n"
-        "        url: https://mcp.example.com/mcp\n        headers_env: {Authorization: GH_AUTH}\n"
+        "        url: https://mcp.example.com/mcp\n"
     )
     server = parse_config(text).config.surfaces.mcp.servers["gh"]
     assert server.transport == "http"

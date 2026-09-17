@@ -85,13 +85,8 @@ def _scheduler(proxy: Proxy) -> Scheduler | None:
 
 
 def listen_address(loaded: LoadedConfig) -> tuple[str, int]:
-    """The one address the shared surfaces listen on."""
-    surfaces = loaded.config.surfaces
-    for surface in (surfaces.fetch, surfaces.mcp, surfaces.llm):
-        if surface.enabled:
-            host, _, port = surface.listen.rpartition(":")
-            return host, int(port)
-    host, _, port = surfaces.fetch.listen.rpartition(":")
+    """The one address every surface that answers HTTP shares."""
+    host, _, port = loaded.config.surfaces.listen.rpartition(":")
     return host, int(port)
 
 

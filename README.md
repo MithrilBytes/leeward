@@ -253,7 +253,8 @@ make dist       # build the sdist and wheel, then install and run the wheel in a
 
 Not built yet:
 
-- `zim` corpora, for a local Kiwix server. `url_list`, `sitemap`, `directory` and `mcp_resources` work, on a cron schedule or when something goes down.
+- Serving from a local mirror, such as a Kiwix archive of Wikipedia. The configuration for it is gone rather than half present: a mirror copy is neither the origin's current answer nor an old one, so it needs a word leeward does not have yet.
+- Authentication headers for an MCP server reached over HTTP. The SDK's client takes a URL and no headers, so the setting for it is gone rather than silently ignored.
 
 Known limits:
 

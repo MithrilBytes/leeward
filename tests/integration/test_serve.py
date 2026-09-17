@@ -26,8 +26,8 @@ def test_serve_reports_its_start_as_json_and_stops_on_sigint(tmp_path: Path) -> 
     port = free_port()
     config = tmp_path / "leeward.yaml"
     config.write_text(
-        f"data_dir: {tmp_path / 'data'}\nsurfaces:\n  fetch:\n    enabled: true\n"
-        f"    listen: 127.0.0.1:{port}\n",
+        f"data_dir: {tmp_path / 'data'}\nsurfaces:\n  listen: 127.0.0.1:{port}\n"
+        f"  fetch:\n    enabled: true\n",
         encoding="utf-8",
     )
     command = [sys.executable, "-m", "leeward", "serve", "--json", "--config", str(config)]

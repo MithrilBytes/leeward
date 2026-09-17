@@ -88,7 +88,6 @@ class Plan:
     corpus: str
     urls: tuple[str, ...]
     robots_skipped: bool = False
-    unsupported: str = ""
 
 
 @dataclass
@@ -104,7 +103,6 @@ class Result:
     dry_run: bool = False
     stopped_at_cap: bool = False
     linked: int = 0
-    unsupported: str = ""
     failures: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
 
     def as_event(self, trigger: Trigger) -> WarmInfo:
@@ -130,7 +128,6 @@ class Result:
             "dry_run": self.dry_run,
             "stopped_at_cap": self.stopped_at_cap,
             "linked": self.linked,
-            "unsupported": self.unsupported or None,
             "failures": [{"url": url, "reason": reason} for url, reason in self.failures],
         }
 
@@ -194,10 +191,8 @@ class Warmer:
             return await self._from_sitemap(corpus, run)
         if isinstance(corpus, DirectoryCorpus):
             return Plan(corpus.name, self._files(corpus), robots_skipped=True)
-        if isinstance(corpus, McpResourcesCorpus):
-            return await self._from_mcp(corpus)
-        kind = type(corpus).__name__.removesuffix("Corpus").lower()
-        return Plan(corpus.name, (), unsupported=kind)
+        # The union is closed, so this is the last kind there is.
+        return await self._from_mcp(corpus)
 
     def _listed(self, corpus: UrlListCorpus) -> tuple[str, ...]:
         urls = list(corpus.urls)
@@ -360,15 +355,7 @@ class Warmer:
         """One corpus, paced, capped, and recorded."""
         run = RunRef.internal(f"warm-{corpus.name}")
         plan = await self.plan(corpus, run)
-        result = Result(
-            corpus=corpus.name,
-            robots_skipped=plan.robots_skipped,
-            dry_run=dry_run,
-            unsupported=plan.unsupported,
-        )
-        if plan.unsupported:
-            self._record(result, run)
-            return result
+        result = Result(corpus=corpus.name, robots_skipped=plan.robots_skipped, dry_run=dry_run)
         if dry_run:
             for url in plan.urls:
                 stored = self.proxy.cache.get(cache_key("GET", url), self.proxy.clock())
@@ -518,9 +505,6 @@ class Warmer:
                 surface=str(Surface.CLI),
                 endpoint=result.corpus,
                 warm=result.as_event(self.trigger),
-                message=(
-                    f"unsupported corpus type: {result.unsupported}" if result.unsupported else None
-                ),
             ),
         )
 

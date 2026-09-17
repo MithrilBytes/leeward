@@ -29,7 +29,6 @@ data_dir: {data}
 surfaces:
   fetch:
     enabled: true
-    listen: 127.0.0.1:8787
     mounts:
       origin: {origin}
     generic_fetch:

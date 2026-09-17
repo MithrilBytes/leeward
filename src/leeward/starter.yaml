@@ -8,7 +8,6 @@ data_dir: ./.leeward
 surfaces:
   fetch:
     enabled: true
-    listen: 127.0.0.1:8787
     # name: https://origin, then point a tool at http://127.0.0.1:8787/<name>/...
     mounts: {}
     generic_fetch:
@@ -16,11 +15,9 @@ surfaces:
       allow_hosts: []
   mcp:
     enabled: false
-    listen: 127.0.0.1:8787
     servers: {}
   llm:
     enabled: false
-    listen: 127.0.0.1:8787
     tiers: []
   forward:
     enabled: false

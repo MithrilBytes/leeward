@@ -16,7 +16,6 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "MithrilBytes" }]
 dependencies = [
-    "anyio>=4.5",
     "httpcore2>=2.13",
     "mcp>=2.2",
     "pydantic>=2.7",

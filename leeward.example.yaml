@@ -7,7 +7,6 @@ data_dir: ./.leeward
 surfaces:
   mcp:                       # point your MCP client at this
     enabled: true
-    listen: 127.0.0.1:8787
     servers:
       notes:
         transport: stdio
@@ -15,13 +14,10 @@ surfaces:
       github:
         transport: http
         url: https://mcp.example.com/mcp
-        headers_env:
-          Authorization: GITHUB_MCP_AUTHORIZATION   # the variable's name, never its value
         accept_stale_argument: false                # true adds an optional accept_stale argument
 
   fetch:                     # point a tool's base URL at a mount
     enabled: true
-    listen: 127.0.0.1:8787
     mounts:
       origin: http://127.0.0.1:8900        # demo fake
       wiki:   https://en.wikipedia.org
@@ -35,7 +31,6 @@ surfaces:
 
   llm:                       # base_url=http://127.0.0.1:8787/v1
     enabled: true
-    listen: 127.0.0.1:8787
     tiers:
       - name: primary
         base_url: https://api.example.com/v1
@@ -119,10 +114,6 @@ corpora:
     respect_robots: true
     schedule: "0 3 * * *"
 
-  - name: wikipedia-offline
-    type: zim
-    kiwix_url: http://127.0.0.1:8080
-    maps_host: en.wikipedia.org
 
 redaction:
   headers: [authorization, x-api-key, cookie, proxy-authorization]

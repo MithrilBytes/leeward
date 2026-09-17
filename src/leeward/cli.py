@@ -658,10 +658,8 @@ def warm(
         if result["stopped_at_cap"]:
             line += ", stopped at the byte cap"
         _out.print(line, markup=False)
-        if result["robots_skipped"] and not result["unsupported"]:
+        if result["robots_skipped"]:
             _out.print("  robots.txt was not consulted for a list you wrote", markup=False)
-        if result["unsupported"]:
-            _out.print(f"  {result['unsupported']} corpora are not implemented", markup=False)
         for failure in cast("list[Mapping[str, str]]", result["failures"])[:5]:
             _out.print(f"  {failure['reason']}: {failure['url']}", markup=False)
 

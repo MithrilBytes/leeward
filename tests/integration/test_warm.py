@@ -146,24 +146,6 @@ async def test_pacing_holds_a_host_to_its_rate(proxy: Proxy) -> None:
     assert elapsed >= 0.25
 
 
-async def test_an_unsupported_corpus_says_so_rather_than_failing(tmp_path: Path) -> None:
-    text = """
-profile: dev
-data_dir: {data}
-corpora:
-  - name: offline
-    type: zim
-    kiwix_url: http://127.0.0.1:8080
-    maps_host: en.wikipedia.org
-"""
-    loaded = parse_config(text.format(data=tmp_path / "data"), tmp_path / "leeward.yaml")
-    proxy = Proxy(loaded)
-    [result] = await warm_all(proxy, [])
-    await proxy.aclose()
-    assert result.unsupported == "zim"
-    assert (result.fetched, result.failed) == (0, 0)
-
-
 async def test_every_warm_run_is_an_event(proxy: Proxy, tmp_path: Path) -> None:
     await warm_all(proxy, ["blackout-refs"])
     proxy.events.close()
@@ -260,7 +242,6 @@ data_dir: {data}
 surfaces:
   mcp:
     enabled: true
-    listen: 127.0.0.1:8787
     servers:
       notes:
         transport: stdio

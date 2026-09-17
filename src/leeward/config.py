@@ -108,13 +108,11 @@ class StdioServer(Strict):
 class HttpServer(Strict):
     transport: Literal["http"]
     url: str
-    headers_env: dict[str, str] = {}
     accept_stale_argument: bool = False
 
 
 class McpSurface(Strict):
     enabled: bool = False
-    listen: Listen = "127.0.0.1:8787"
     servers: dict[str, Annotated[StdioServer | HttpServer, Field(discriminator="transport")]] = {}
 
 
@@ -125,7 +123,6 @@ class GenericFetch(Strict):
 
 class FetchSurface(Strict):
     enabled: bool = False
-    listen: Listen = "127.0.0.1:8787"
     mounts: dict[str, str] = {}
     generic_fetch: GenericFetch = GenericFetch()
 
@@ -148,12 +145,15 @@ class StatusLine(Strict):
 
 class LlmSurface(Strict):
     enabled: bool = False
-    listen: Listen = "127.0.0.1:8787"
     tiers: list[Tier] = []
     status_line: StatusLine = StatusLine()
 
 
 class Surfaces(Strict):
+    listen: Listen = "127.0.0.1:8787"
+    """One address for every surface that answers HTTP. The forward proxy tunnels rather
+    than answers, so it keeps a port of its own."""
+
     mcp: McpSurface = McpSurface()
     fetch: FetchSurface = FetchSurface()
     forward: ForwardSurface = ForwardSurface()
@@ -294,19 +294,13 @@ class DirectoryCorpus(CorpusBase):
     maps_to: str
 
 
-class ZimCorpus(CorpusBase):
-    type: Literal["zim"]
-    kiwix_url: str
-    maps_host: str
-
-
 class McpResourcesCorpus(CorpusBase):
     type: Literal["mcp_resources"]
     server: str
 
 
 Corpus = Annotated[
-    UrlListCorpus | SitemapCorpus | DirectoryCorpus | ZimCorpus | McpResourcesCorpus,
+    UrlListCorpus | SitemapCorpus | DirectoryCorpus | McpResourcesCorpus,
     Field(discriminator="type"),
 ]
 
@@ -357,17 +351,8 @@ class Config(Strict):
     def _coherent(self) -> Self:
         if self.chaos.enabled and self.profile == "production":
             raise ValueError("chaos: fault injection cannot be enabled while profile is production")
-        shared = {
-            s.listen
-            for s in (self.surfaces.mcp, self.surfaces.fetch, self.surfaces.llm)
-            if s.enabled
-        }
-        if len(shared) > 1:
-            raise ValueError(
-                f"surfaces: mcp, fetch and llm share one listener, but name {sorted(shared)}"
-            )
-        if self.surfaces.forward.enabled and self.surfaces.forward.listen in shared:
-            raise ValueError("surfaces.forward.listen must differ from the shared listener")
+        if self.surfaces.forward.enabled and self.surfaces.forward.listen == self.surfaces.listen:
+            raise ValueError("surfaces.forward.listen must differ from surfaces.listen")
         for name, url in self.surfaces.fetch.mounts.items():
             if name in RESERVED_MOUNTS or not NAME.match(name):
                 raise ValueError(f"surfaces.fetch.mounts.{name}: reserved or invalid mount name")

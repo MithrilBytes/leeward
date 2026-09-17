@@ -47,7 +47,6 @@ data_dir: {data}
 surfaces:
   mcp:
     enabled: true
-    listen: 127.0.0.1:8787
     servers:
       notes:
         transport: stdio
@@ -307,7 +306,6 @@ data_dir: {data}
 surfaces:
   mcp:
     enabled: true
-    listen: 127.0.0.1:8787
     servers:
       notes:
         transport: stdio
