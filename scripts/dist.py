@@ -37,6 +37,7 @@ from mcp.client.client import Client
 from mcp.client.stdio import StdioServerParameters
 from mcp_types import TextContent
 
+from leeward.surfaces.mcp import OUTCOME_META_KEY
 from leeward.templates import template_set_sha256
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -189,8 +190,8 @@ async def call_through_wrap(bin_dir: Path, work: Path) -> tuple[list[str], list[
         tools = [tool.name for tool in (await client.list_tools()).tools]
         result = await client.call_tool("echo", {"text": "hello from the wheel"})
     texts = [block.text for block in result.content if isinstance(block, TextContent)]
-    structured = cast("dict[str, Any]", result.structured_content or {})
-    return tools, texts, str(cast("dict[str, Any]", structured.get("leeward", {})).get("outcome"))
+    meta = result.meta or {}
+    return tools, texts, str(cast("dict[str, Any]", meta.get(OUTCOME_META_KEY, {})).get("outcome"))
 
 
 def check_installed(bin_dir: Path, venv: Path, work: Path, version: str) -> list[str]:

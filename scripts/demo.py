@@ -46,6 +46,7 @@ from leeward.config import parse_config
 from leeward.events import read_events
 from leeward.proxy import Proxy
 from leeward.serve import build_app
+from leeward.surfaces.mcp import OUTCOME_META_KEY
 from leeward.surfaces.upstream import describe
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -245,7 +246,7 @@ def record(
     measured: Measured, case: str, called: tuple[CallToolResult, float, int], attempts: int
 ) -> None:
     result, elapsed, reached = called
-    outcome = cast("dict[str, Any]", cast("dict[str, Any]", result.structured_content)["leeward"])
+    outcome = cast("dict[str, Any]", cast("dict[str, Any]", result.meta)[OUTCOME_META_KEY])
     failure = cast("dict[str, Any] | None", outcome.get("failure"))
     text = result_text(
         str(outcome["outcome"]),

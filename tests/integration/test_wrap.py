@@ -24,6 +24,7 @@ from mcp.client.stdio import StdioServerParameters
 from mcp_types import CallToolResult, TextContent, TextResourceContents
 
 from leeward.events import read_events
+from leeward.surfaces.mcp import OUTCOME_META_KEY
 from leeward.surfaces.upstream import describe
 from tests.support import REPO_ROOT, assert_valid
 
@@ -34,8 +35,7 @@ Wrapped = Callable[..., AbstractAsyncContextManager[Client]]
 
 
 def outcome_of(result: CallToolResult) -> dict[str, Any]:
-    structured = cast("dict[str, Any]", result.structured_content)
-    return cast("dict[str, Any]", structured["leeward"])
+    return cast("dict[str, Any]", cast("dict[str, Any]", result.meta)[OUTCOME_META_KEY])
 
 
 def origin_content(result: CallToolResult) -> list[str]:
