@@ -4,6 +4,19 @@ A proxy that sits between your agent and everything it calls, so that a failure 
 
 An agent that calls a tool and gets back `Error: request failed` cannot tell a timeout worth retrying from a tool that no longer exists. So it retries both, spends its budget on the one that was never coming back, and ends the run with nothing to say. leeward stands in front of the call. It classifies what went wrong, decides whether waiting could possibly help, and answers with the last good copy where that is honest, or with a short note that says what is missing and what to do instead. The agent does not change.
 
+## What it looks like
+
+The same small agent, twice, with its MCP server killed underneath it mid session. On the
+left it talks to the server directly. On the right it talks through `leeward wrap`. A local
+model, real processes, a real `SIGKILL`, one take. `make recording` reruns it.
+
+![The same agent with and without leeward, its MCP server killed mid session](demo/leeward.svg)
+
+Without leeward the second call raises `MCPError: Connection closed` and the agent has
+nothing to say. With leeward the same call returns the last good answer as `STALE`, with a
+note saying the tool is gone and how old the copy is, and the agent answers the question and
+passes the caveat on.
+
 ## The failures it handles
 
 **The wedged call.** A request that connects and then hangs holds the run open until something else gives up. leeward returns at the hard deadline with the failure classified, and refuses the next call to that endpoint without touching the network once it knows the hang is not a one off.
@@ -199,7 +212,6 @@ Not built yet:
 
 - An OpenAI compatible endpoint for model calls, with failover between tiers.
 - A warmer that fills the cache before an outage.
-- A recording of an agent run with and without leeward.
 
 Known limits:
 
