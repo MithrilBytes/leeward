@@ -1,4 +1,4 @@
-.PHONY: install lock lock-check test lint typecheck check dist demo recording clean
+.PHONY: install lock lock-check test lint typecheck check dist demo overhead recording clean
 
 # make lock resolves on the interpreter in .venv and writes its version into the first
 # line of constraints.txt. Other supported interpreters install the same pins.
@@ -48,6 +48,9 @@ dist:
 # README.md marked demo from what came back.
 demo:
 	$(VENV)/python -m scripts.demo --readme README.md
+
+overhead:
+	$(VENV)/python -m scripts.overhead --readme README.md
 
 # recording needs a local model (ollama pull qwen2.5:7b-instruct-q4_K_M), asciinema and
 # npx. It runs the agent twice for real, kills its MCP server both times, and rewrites

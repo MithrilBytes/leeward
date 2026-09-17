@@ -49,6 +49,25 @@ Measured on macOS 26.6.2 on arm64 with 10 cores, Python 3.13.2, leeward 0.1.0, 2
 
 <!-- /demo:measured -->
 
+### What it costs when nothing is wrong
+
+<!-- demo:overhead -->
+
+Measured over 200 calls each against a fake origin on loopback.
+
+| Path | p50 | p95 |
+| --- | --- | --- |
+| straight to the origin, no leeward | 0.33 ms | 0.51 ms |
+| through leeward, to the origin | 0.79 ms | 1.08 ms |
+| through leeward, answered from cache | 0.12 ms | 0.17 ms |
+
+leeward adds about 0.45 ms to a call it has to make, and answers from its own cache in 0.12 ms.
+
+<!-- /demo:overhead -->
+
+That is the whole proxy: policy, classification, the cache write and the event log, on
+loopback where the network is nearly free. `make overhead` reruns it.
+
 <!-- demo:suite -->
 
 The suite is 483 tests, 13 seconds on the machine above.

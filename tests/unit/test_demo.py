@@ -33,3 +33,39 @@ def test_a_result_names_the_class_what_it_carries_and_the_advice() -> None:
     shown = result_text("DOWN", "BREAKER_OPEN", "WEDGED", "504", "DO_NOT_RETRY")
     assert shown == "`DOWN{BREAKER_OPEN}` carrying `WEDGED`, 504, `DO_NOT_RETRY`"
     assert result_text("STALE", None, None, "200", "PROCEED") == "`STALE`, 200, `PROCEED`"
+
+
+def test_a_region_a_script_does_not_own_is_left_alone() -> None:
+    from scripts.demo import fill
+
+    text = (
+        "<!-- demo:measured -->\nold numbers\n<!-- /demo:measured -->\n"
+        "<!-- demo:overhead -->\nold cost\n<!-- /demo:overhead -->\n"
+    )
+    written = fill(text, {"overhead": "new cost"})
+    assert "old numbers" in written
+    assert "new cost" in written
+    assert "old cost" not in written
+
+
+def test_filling_a_region_that_is_not_there_is_an_error() -> None:
+    import pytest
+    from scripts.demo import fill
+
+    with pytest.raises(ValueError, match="no such region"):
+        fill("<!-- demo:measured -->\nx\n<!-- /demo:measured -->\n", {"nowhere": "y"})
+
+
+def test_the_overhead_table_reports_what_leeward_added() -> None:
+    from scripts.overhead import Timing, table
+
+    printed = table(
+        [
+            Timing("straight to the origin, no leeward", [0.001] * 10),
+            Timing("through leeward, to the origin", [0.0015] * 10),
+            Timing("through leeward, answered from cache", [0.0002] * 10),
+        ]
+    )
+    assert "| straight to the origin, no leeward | 1.00 ms | 1.00 ms |" in printed
+    assert "leeward adds about 0.50 ms" in printed
+    assert "answers from its own cache in 0.20 ms" in printed

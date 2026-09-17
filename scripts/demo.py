@@ -369,17 +369,25 @@ def blocks(measured: Measured, tests: str) -> dict[str, str]:
 
 
 def fill(text: str, filled: Mapping[str, str]) -> str:
-    """The text with every demo region replaced, refusing a region nothing fills."""
+    """The text with the given regions replaced.
+
+    Every region handed in has to exist, so a renamed region is an error rather than a
+    silent no-op. Regions this caller knows nothing about are left exactly as they are,
+    since more than one script writes into the same file.
+    """
+    written: set[str] = set()
 
     def replace(match: re.Match[str]) -> str:
         name = match["name"]
         if name not in filled:
-            raise ValueError(f"no content for the region demo:{name}")
+            return match[0]
+        written.add(name)
         return f"{match[1]}\n{filled[name].strip()}\n\n{match[3]}"
 
-    result, count = REGION.subn(replace, text)
-    if count == 0:
-        raise ValueError("no <!-- demo:NAME --> regions found")
+    result, _count = REGION.subn(replace, text)
+    missing = set(filled) - written
+    if missing:
+        raise ValueError(f"no such region in the file: {', '.join(sorted(missing))}")
     return result
 
 
