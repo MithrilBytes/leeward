@@ -297,8 +297,8 @@ async def test_an_mcp_resource_corpus_keeps_what_the_server_offers(tmp_path: Pat
         return "what to do in a blackout"
 
     fronted = Upstream("notes", loaded.config.surfaces.mcp.servers["notes"], server=server)
-    warmer = Warmer(proxy)
-    warmer._upstreams["notes"] = fronted  # the same in-process server the front will use
+    # The same in-process server the front will use, handed over rather than started again.
+    warmer = Warmer(proxy, upstreams={"notes": fronted})
     corpus = proxy.config.corpora[0]
 
     # The fake offers an index as well as the handbook, and both are kept.
