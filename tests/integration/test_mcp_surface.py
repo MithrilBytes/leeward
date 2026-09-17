@@ -20,6 +20,8 @@ import uvicorn
 from fakes.mcp_server import Journal, build_server, vanish
 from mcp.client.client import Client
 from mcp.server.mcpserver import MCPServer
+from mcp.shared.exceptions import MCPError
+from mcp_types import CONNECTION_CLOSED
 
 from leeward.config import parse_config
 from leeward.events import read_events
@@ -156,6 +158,28 @@ async def test_a_second_call_to_a_vanished_tool_costs_nothing(
     assert outcome["failure"]["underlying_class"] == "TOOL_GONE"
     assert outcome["advice"] == "DO_NOT_RETRY"
     assert journal.hits("threat_intel_lookup") == 1
+
+
+async def test_a_live_server_sending_the_closed_connection_code_is_not_taken_for_gone(
+    front: tuple[ServerFront, Proxy, Journal], upstream: tuple[MCPServer, Journal]
+) -> None:
+    fronted, proxy, _journal = front
+    server, _other = upstream
+
+    @server.tool()
+    def overloaded() -> str:
+        """Fails with -32000, a code JSON-RPC leaves to servers and the SDK also uses locally."""
+        raise MCPError(code=CONNECTION_CLOSED, message="Connection closed")
+
+    async with Client(fronted) as client:
+        result = await client.call_tool("overloaded", {})
+        still = await client.call_tool("incident_notes", {"query": "blackout"})
+
+    outcome = leeward_field(result)
+    assert outcome["failure"]["class"] == "SERVER_ERROR"
+    assert outcome["failure"]["disposition"] == "TRANSIENT"
+    assert proxy.breakers.get("endpoint", "notes/overloaded").state is BreakerState.CLOSED
+    assert leeward_field(still)["outcome"] == "FRESH"
 
 
 async def test_a_tool_that_starts_failing_falls_back_to_its_last_answer(

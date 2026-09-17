@@ -15,12 +15,12 @@ import json
 import os
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Literal
 
 from mcp.client.client import Client
 from mcp.client.stdio import StdioServerParameters
 from mcp.shared.exceptions import MCPError
-from mcp_types import CallToolResult, TextContent, Tool
+from mcp_types import CONNECTION_CLOSED, CallToolResult, TextContent, Tool
 
 from leeward.classify import (
     CLASSIFY_SAMPLE_BYTES,
@@ -35,6 +35,9 @@ from leeward.config import HttpServer, StdioServer
 from leeward.deadlines import Deadline
 from leeward.policy import ResolvedPolicy
 from leeward.transport import Call, Counters, Fetched
+
+CONFIRM_CLOSED_S = 1.0
+"""The longest the request confirming a closed connection may take, within the call's deadline."""
 
 
 class Upstream:
@@ -132,6 +135,37 @@ class Upstream:
             return False
         return tool in self.known_tools
 
+    @property
+    def exit_reason(self) -> Literal["server_exited", "session_closed"]:
+        """What a closed connection means: a process that ended, or a session that did."""
+        return "server_exited" if isinstance(self.spec, StdioServer) else "session_closed"
+
+    async def closed(self, within_s: float) -> bool:
+        """Whether the session has really closed, confirmed with a second request.
+
+        The SDK reports a closed connection as error -32000, which JSON-RPC 2.0 also
+        leaves to servers for errors of their own, so the code alone is not enough to
+        give up on a server that may still be answering. A request on a closed
+        connection fails at once; one that has not been answered within `within_s` is
+        given the benefit of the doubt. The request is tools/list rather than ping,
+        which the 2026-07-28 revision removed.
+        https://www.jsonrpc.org/specification#error_object
+        """
+        client = self._client
+        if client is None:
+            return True
+        try:
+            async with asyncio.timeout(within_s):
+                await client.list_tools(cache_mode="bypass")
+        except MCPError as error:
+            return error.code == CONNECTION_CLOSED
+        except TimeoutError:
+            # Ahead of OSError, which TimeoutError subclasses: slow is not closed.
+            return False
+        except (ConnectionError, BrokenPipeError, EOFError, OSError):
+            return True
+        return False
+
     async def call(self, tool: str, arguments: dict[str, Any], timeout_s: float) -> CallToolResult:
         client = await self.client()
         return await client.call_tool(tool, arguments, read_timeout_seconds=timeout_s)
@@ -186,6 +220,12 @@ class ToolCaller:
                 self.tool, self.arguments, deadline.remaining(started)
             )
         except MCPError as error:
+            # The session is dropped, not kept for the next call to fail on too: other
+            # tools start a new one, and the breaker keeps this tool from asking again.
+            confirm_s = min(CONFIRM_CLOSED_S, max(deadline.remaining(self.clock()), 0.0))
+            if error.code == CONNECTION_CLOSED and await self.upstream.closed(confirm_s):
+                await self.upstream.forget()
+                return self._failed(ToolAbsent(self.upstream.exit_reason), started)
             return self._failed(
                 ToolError(
                     code=error.code,
@@ -196,7 +236,7 @@ class ToolCaller:
             )
         except (ConnectionError, BrokenPipeError, EOFError, OSError):
             await self.upstream.forget()
-            return self._failed(ToolAbsent("server_exited"), started)
+            return self._failed(ToolAbsent(self.upstream.exit_reason), started)
         if result.is_error:
             return await self._refused(result, started)
         body = result.model_dump_json(by_alias=True).encode("utf-8")
