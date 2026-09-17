@@ -69,3 +69,22 @@ def test_the_overhead_table_reports_what_leeward_added() -> None:
     assert "| straight to the origin, no leeward | 1.00 ms | 1.00 ms |" in printed
     assert "leeward adds about 0.50 ms" in printed
     assert "answers from its own cache in 0.20 ms" in printed
+
+
+def test_only_the_note_regions_a_readme_asks_for_are_offered() -> None:
+    from scripts.demo import offered
+
+    text = "".join(
+        f"<!-- demo:{name} -->\nold\n<!-- /demo:{name} -->\n"
+        for name in ("measured", "notes", "suite", "note-gone")
+    )
+    filled = {"measured": "m", "notes": "n", "suite": "s", "note-gone": "g", "note-quota": "q"}
+    assert set(offered(filled, text)) == {"measured", "notes", "suite", "note-gone"}
+
+
+def test_a_readme_without_the_regions_that_carry_the_argument_is_an_error() -> None:
+    import pytest
+    from scripts.demo import offered
+
+    with pytest.raises(ValueError, match="missing required regions: measured, notes"):
+        offered({"suite": "s"}, "<!-- demo:suite -->\nold\n<!-- /demo:suite -->\n")
