@@ -52,7 +52,7 @@ demo:
 overhead:
 	$(VENV)/python -m scripts.overhead --readme README.md
 
-# recording needs a local model (ollama pull qwen2.5:7b-instruct-q4_K_M), asciinema and
+# recording needs a local model (ollama pull granite3.3:8b), asciinema and
 # npx. It runs the agent twice for real, kills its MCP server both times, and rewrites
 # the animation in the README from what happened.
 recording:

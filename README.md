@@ -126,7 +126,7 @@ surfaces: {forward: {enabled: true, listen: "127.0.0.1:8788"}}
 **Model calls.** Give a client an OpenAI compatible base URL and it goes out through the same engine, with tiers tried in order.
 
 ```yaml
-surfaces: {llm: {enabled: true, tiers: [{name: primary, base_url: "https://api.example.com/v1", model: some-model, api_key_env: LLM_API_KEY}, {name: local, base_url: "http://127.0.0.1:11434/v1", model: "qwen2.5:7b-instruct-q4_K_M"}]}}
+surfaces: {llm: {enabled: true, tiers: [{name: primary, base_url: "https://api.example.com/v1", model: some-model, api_key_env: LLM_API_KEY}, {name: local, base_url: "http://127.0.0.1:11434/v1", model: "granite3.3:8b"}]}}
 ```
 
 Point the client at `http://127.0.0.1:8787/v1`. A failure arrives in the provider's own error shape, with leeward's note as the message and the whole outcome under `error.leeward`, so a client library parses it rather than choking on it. The answer says which tier produced it, and which tiers it fell through on the way. Keys are read from the environment, never from the file. Model calls are not cached. Streaming works: leeward fails over between tiers before the first byte, and if a stream stops early it adds one more event saying why, so the client keeps what arrived and knows where it ended.

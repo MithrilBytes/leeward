@@ -43,7 +43,7 @@ surfaces:
         api_key_env: LLM_API_KEY
       - name: local
         base_url: http://127.0.0.1:11434/v1
-        model: qwen2.5:7b-instruct-q4_K_M
+        model: granite3.3:8b
     status_line:
       enabled: false          # see `leeward status --show-injection`
 
