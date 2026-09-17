@@ -70,6 +70,11 @@ def tool_key(server: str, tool: str, arguments: object) -> str:
     return canonical_sha256({"tool": f"{server}/{tool}", "arguments": arguments})
 
 
+def resource_key(server: str, uri: str) -> str:
+    """The key for one resource read. A resource is read only, so its URI is the whole of it."""
+    return canonical_sha256({"resource": f"{server}/{uri}"})
+
+
 @dataclass(frozen=True, slots=True)
 class CacheStats:
     entries: int

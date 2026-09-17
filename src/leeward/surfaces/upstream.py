@@ -327,6 +327,61 @@ class ToolCaller:
         )
 
 
+class ResourceCaller:
+    """Reads one resource as an attempt, so the engine treats it like any other call."""
+
+    def __init__(
+        self, upstream: Upstream, uri: str, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self.upstream = upstream
+        self.uri = uri
+        self.clock = clock
+
+    async def fetch(
+        self,
+        call: Call,
+        policy: ResolvedPolicy,
+        deadline: Deadline,
+        *,
+        fresh: bool = False,
+        idle_s: float | None = None,
+        counters: Counters | None = None,
+    ) -> Fetched:
+        marks = counters if counters is not None else Counters()
+        started = self.clock()
+        marks.connected = True
+        marks.sent = 1
+        try:
+            client = await self.upstream.client()
+            result = await client.read_resource(self.uri, cache_mode="bypass")
+        except MCPError as error:
+            return Fetched(
+                evidence=ToolError(
+                    code=error.code, message=error.message, listed_before=True, in_band=True
+                ),
+                elapsed_s=self.clock() - started,
+                connected=True,
+                bytes_sent=True,
+            )
+        except (ConnectionError, BrokenPipeError, EOFError, OSError):
+            await self.upstream.forget()
+            return Fetched(
+                evidence=ToolAbsent(self.upstream.exit_reason),
+                elapsed_s=self.clock() - started,
+                connected=True,
+                bytes_sent=True,
+            )
+        body = result.model_dump_json(by_alias=True).encode("utf-8")
+        return Fetched(
+            evidence=Response(200, {}, body[:CLASSIFY_SAMPLE_BYTES]),
+            body=body,
+            elapsed_s=self.clock() - started,
+            connected=True,
+            bytes_sent=True,
+            payload=result,
+        )
+
+
 def describe(result: CallToolResult) -> str:
     """The text a person would read out of a tool result, for the CLI and for tests."""
     parts = [

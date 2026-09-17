@@ -22,6 +22,7 @@ from mcp.client.client import Client
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel.server import Server
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 from mcp_types import CONNECTION_CLOSED, ListToolsResult, PaginatedRequestParams, Tool
 from pydantic import BaseModel, ConfigDict
@@ -470,3 +471,58 @@ async def test_a_caller_can_name_its_run_when_the_protocol_carries_no_session(
     }
     assert set(runs.values()) == {"mcp_meta"}
     assert len(runs) == 1
+
+
+async def test_a_resource_read_is_cached_and_served_when_the_server_stops_answering(
+    tmp_path: Path, upstream: tuple[MCPServer, Journal]
+) -> None:
+    """A resource is read only by protocol, so leeward keeps it without being asked."""
+    server, _journal = upstream
+    failing = {"now": False}
+
+    @server.resource("notes://handbook")
+    def handbook() -> str:
+        if failing["now"]:
+            raise ToolError("the document store is not answering")
+        return "what to do in a blackout"
+
+    loaded = parse_config(CONFIG.format(data=tmp_path / "data"), tmp_path / "leeward.yaml")
+    proxy = Proxy(loaded)
+    fronted = Upstream("notes", loaded.config.surfaces.mcp.servers["notes"], server=server)
+
+    async with Client(ServerFront(proxy, fronted)) as client:
+        first = await client.read_resource("notes://handbook")
+        failing["now"] = True
+        after = await client.read_resource("notes://handbook")
+
+    await fronted.aclose()
+    await proxy.aclose()
+
+    assert cast("Any", first.contents[0]).text == "what to do in a blackout"
+    assert cast("Any", first.meta)[OUTCOME_META_KEY]["outcome"] == "FRESH"
+
+    # The server is failing and the document comes back anyway, byte for byte, with the
+    # decision beside it rather than spliced into it.
+    assert cast("Any", after.contents[0]).text == "what to do in a blackout"
+    outcome = cast("Any", after.meta)[OUTCOME_META_KEY]
+    assert outcome["outcome"] == "STALE"
+    assert outcome["advice"] == "PROCEED_WITH_CAUTION"
+    assert outcome["age_s"] is not None
+    assert_valid("outcome", outcome)
+
+
+async def test_a_resource_that_was_never_read_fails_as_a_protocol_error(
+    tmp_path: Path, upstream: tuple[MCPServer, Journal]
+) -> None:
+    server, _journal = upstream
+    loaded = parse_config(CONFIG.format(data=tmp_path / "data"), tmp_path / "leeward.yaml")
+    proxy = Proxy(loaded)
+    fronted = Upstream("notes", loaded.config.surfaces.mcp.servers["notes"], server=server)
+
+    async with Client(ServerFront(proxy, fronted)) as client:
+        with pytest.raises(MCPError) as raised:
+            await client.read_resource("notes://nothing-here")
+
+    await fronted.aclose()
+    await proxy.aclose()
+    assert "[leeward]" in raised.value.message

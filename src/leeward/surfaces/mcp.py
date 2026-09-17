@@ -24,6 +24,7 @@ from typing import Any, cast
 
 from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import MCPServer
+from mcp.shared.exceptions import MCPError
 from mcp_types import (
     CallToolResult,
     GetPromptRequestParams,
@@ -50,12 +51,12 @@ from leeward.cache.freshness import (
     Withhold,
     decide,
 )
-from leeward.cache.store import tool_key
+from leeward.cache.store import resource_key, tool_key
 from leeward.events import CacheInfo, RunRef
 from leeward.outcome import CallOutcome, build
 from leeward.policy import CallTarget, ResolvedPolicy, resolve
 from leeward.proxy import Proxy
-from leeward.surfaces.upstream import ToolCaller, Upstream
+from leeward.surfaces.upstream import ResourceCaller, ToolCaller, Upstream
 from leeward.surfaces.upstream import describe as describe
 from leeward.transport import Call
 from leeward.vocab import Outcome, Surface
@@ -68,6 +69,12 @@ https://modelcontextprotocol.io/specification/2026-07-28/basic/index#_meta
 
 RUN_HEADER = "x-leeward-run"
 """The same thing over a transport that has headers. Matched case-insensitively."""
+
+RESOURCE_ENDPOINT = "resources/read"
+"""One endpoint for every resource a server offers, so rules and breakers cover them all."""
+
+RESOURCE_UNAVAILABLE = -32002
+"""JSON-RPC code for a resource that cannot be read, as the MCP specification uses it."""
 
 OUTCOME_META_KEY = "io.github.mithrilbytes.leeward/outcome"
 """Where every tool result carries leeward's outcome.
@@ -93,6 +100,13 @@ ACCEPT_STALE_SCHEMA: dict[str, object] = {
         " reaches the tool."
     ),
 }
+
+
+def _resource_with_outcome(read: ReadResourceResult, outcome: CallOutcome) -> ReadResourceResult:
+    """The document exactly as the server sent it, with leeward's decision beside it."""
+    meta = dict(cast("Mapping[str, Any]", read.meta or {}))
+    meta[OUTCOME_META_KEY] = outcome.as_dict()
+    return read.model_copy(update={"meta": meta})
 
 
 def note_block(outcome: CallOutcome) -> TextContent:
@@ -220,8 +234,112 @@ class ServerFront(MCPServer):
     async def _handle_read_resource(
         self, ctx: ServerRequestContext[Any], params: ReadResourceRequestParams
     ) -> ReadResourceResult:
-        client = await self.upstream.client()
-        return await client.read_resource(str(params.uri), cache_mode="bypass")
+        """A resource read, through the cache.
+
+        The protocol says a resource read has no side effects, so unlike a tool call
+        this is cached without being asked, under the server's own class and staleness
+        rules. Nothing is added to the document: the outcome rides in `_meta`, because a
+        note spliced into a document would be leeward writing content.
+        """
+        uri = str(params.uri)
+        proxy = self.proxy
+        now = proxy.clock()
+        policy = resolve(proxy.config, CallTarget.tool(self.upstream.name, RESOURCE_ENDPOINT))
+        run = self._run_of(ctx)
+        ledger = proxy.runs.ledger(run, now)
+        key = resource_key(self.upstream.name, uri)
+        entry = proxy.cache.get(key, now)
+        decision = decide(entry, policy.stale_allowance(), Situation.START, now)
+        if isinstance(decision, ServeFresh | ServeStale):
+            return self._resource_from_cache(uri, decision, policy, ledger, run)
+
+        report = await proxy.engine.call(
+            Call("RESOURCE", f"mcp://{self.upstream.name}/{uri}"),
+            policy,
+            ledger,
+            request_key=key,
+            caller=ResourceCaller(self.upstream, uri),
+        )
+        after = proxy.clock()
+        if report.ok and report.fetched is not None:
+            read = cast("ReadResourceResult", report.fetched.payload)
+            proxy.cache.put(
+                key=key,
+                url=f"mcp://{self.upstream.name}/{uri}",
+                method="RESOURCE",
+                endpoint=policy.endpoint,
+                status=200,
+                headers=(),
+                body=report.fetched.body,
+                requested_at=now,
+                received_at=after,
+                volatility=policy.volatility,
+                now=after,
+            )
+            outcome = build(Outcome.FRESH, policy, report=report, ledger=ledger, now=after)
+            proxy.record(outcome, report, Surface.MCP, run, ledger, cache=CacheInfo(hit=False))
+            return _resource_with_outcome(read, outcome)
+
+        failed = decide(entry, policy.stale_allowance(), Situation.ORIGIN_FAILED, after)
+        if isinstance(failed, ServeStale):
+            return self._resource_from_cache(uri, failed, policy, ledger, run, report=report)
+        withheld = failed if isinstance(failed, Withhold) else None
+        outcome = build(
+            Outcome.DOWN,
+            policy,
+            report=report,
+            withheld=withheld,
+            ledger=ledger,
+            breaker=proxy.breakers.get("endpoint", policy.endpoint),
+            now=after,
+        )
+        proxy.record(
+            outcome,
+            report,
+            Surface.MCP,
+            run,
+            ledger,
+            cache=CacheInfo(
+                hit=False, withheld=str(withheld.reason) if withheld is not None else None
+            ),
+        )
+        # A resource read has no isError to carry a failure, so it comes back as the
+        # protocol's own error, with leeward's note as the message.
+        raise MCPError(RESOURCE_UNAVAILABLE, outcome.note, {"leeward": outcome.as_dict()})
+
+    def _resource_from_cache(
+        self,
+        uri: str,
+        decision: ServeFresh | ServeStale,
+        policy: ResolvedPolicy,
+        ledger: RunLedger,
+        run: RunRef,
+        *,
+        report: CallReport | None = None,
+    ) -> ReadResourceResult:
+        proxy = self.proxy
+        entry: StoredResponse = decision.entry
+        body = proxy.cache.read_body(entry)
+        stale = decision if isinstance(decision, ServeStale) else None
+        outcome = build(
+            Outcome.STALE if stale is not None else Outcome.FRESH,
+            policy,
+            report=report,
+            served=entry,
+            served_stale=stale,
+            ledger=ledger,
+            known_failure=proxy.known_failure(policy.endpoint),
+            now=proxy.clock(),
+        )
+        proxy.record(
+            outcome,
+            report,
+            Surface.MCP,
+            run,
+            ledger,
+            cache=CacheInfo(hit=True, age_s=int(decision.age_s), bytes_served=len(body)),
+        )
+        return _resource_with_outcome(ReadResourceResult.model_validate_json(body), outcome)
 
     @property
     def _accepts_stale_argument(self) -> bool:
@@ -409,7 +527,7 @@ class ServerFront(MCPServer):
         the transport has headers. A session id is still honoured for older clients,
         and the connection remains the fallback.
         """
-        inner = getattr(context, "request_context", None)
+        inner = getattr(context, "request_context", None) or context
         session = getattr(context, "session_id", None) or getattr(inner, "session_id", None)
         return resolve_run(
             header=_text(_mapping(getattr(context, "headers", None)).get(RUN_HEADER)),
