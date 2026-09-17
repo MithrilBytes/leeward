@@ -24,7 +24,8 @@ from mcp_types import CallToolResult, TextContent, Tool
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
-from leeward.budget import resolve_run
+from leeward.attempt import CallReport
+from leeward.budget import RunLedger, resolve_run
 from leeward.cache.freshness import (
     ServeFresh,
     ServeStale,
@@ -184,7 +185,7 @@ class ServerFront(MCPServer):
 
         failed = decide(entry, allowance, Situation.ORIGIN_FAILED, after, accept_stale=accept_stale)
         if isinstance(failed, ServeStale):
-            return self._from_cache(failed, policy, ledger, run, report_note=True)
+            return self._from_cache(failed, policy, ledger, run, report=report)
         withheld = failed if isinstance(failed, Withhold) else None
         outcome = build(
             Outcome.DOWN,
@@ -212,11 +213,13 @@ class ServerFront(MCPServer):
         self,
         decision: ServeFresh | ServeStale,
         policy: ResolvedPolicy,
-        ledger: object,
+        ledger: RunLedger,
         run: RunRef,
         *,
-        report_note: bool = False,
+        report: CallReport | None = None,
     ) -> CallToolResult:
+        """A stored result. After a failed call, `report` is that call, so the note can
+        say what failed and the attempts and breaker changes behind it are recorded."""
         proxy = self.proxy
         entry: StoredResponse = decision.entry
         body = proxy.cache.read_body(entry)
@@ -224,18 +227,19 @@ class ServerFront(MCPServer):
         outcome = build(
             Outcome.STALE if stale is not None else Outcome.FRESH,
             policy,
+            report=report,
             served=entry,
             served_stale=stale,
-            ledger=cast("Any", ledger),
+            ledger=ledger,
             known_failure=proxy.known_failure(policy.endpoint),
             now=proxy.clock(),
         )
         proxy.record(
             outcome,
-            None,
+            report,
             Surface.MCP,
             run,
-            cast("Any", ledger),
+            ledger,
             cache=CacheInfo(hit=True, age_s=int(decision.age_s), bytes_served=len(body)),
         )
         return with_outcome(stored_result(body), outcome)
