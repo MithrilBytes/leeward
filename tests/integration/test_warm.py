@@ -10,9 +10,11 @@ from pathlib import Path
 import pytest
 from fakes.origin import FakeOrigin, Reply, constant, document
 
+from leeward.cache.store import cache_key
 from leeward.config import parse_config
 from leeward.events import read_events
 from leeward.proxy import Proxy
+from leeward.vocab import Volatility
 from leeward.warm import Warmer, warm_all
 from tests.support import assert_valid
 
@@ -179,3 +181,73 @@ async def test_every_warm_run_is_an_event(proxy: Proxy, tmp_path: Path) -> None:
 async def test_asking_for_a_corpus_that_is_not_configured_names_it(proxy: Proxy) -> None:
     with pytest.raises(KeyError, match="nothing-here"):
         await warm_all(proxy, ["nothing-here"])
+
+
+DIRECTORY = """
+profile: dev
+data_dir: {data}
+rules:
+  - name: docs
+    match: {{url: "*/docs/*"}}
+    class: static
+    stale_on_error: 30d
+corpora:
+  - name: handbook
+    type: directory
+    path: {path}
+    maps_to: https://docs.example.test/docs
+"""
+
+
+async def test_a_directory_corpus_puts_local_files_in_the_cache(tmp_path: Path) -> None:
+    root = tmp_path / "handbook"
+    (root / "runbooks").mkdir(parents=True)
+    (root / "index.html").write_text("<h1>the handbook</h1>", encoding="utf-8")
+    (root / "runbooks" / "blackout.md").write_text("# what to do", encoding="utf-8")
+    (root / "runbooks" / "notes.bin").write_bytes(b"\x00\x01")
+
+    loaded = parse_config(
+        DIRECTORY.format(data=tmp_path / "data", path=root), tmp_path / "leeward.yaml"
+    )
+    proxy = Proxy(loaded)
+    [result] = await warm_all(proxy, ["handbook"])
+
+    assert (result.fetched, result.failed) == (3, 0)
+    entry = proxy.cache.get(
+        cache_key("GET", "https://docs.example.test/docs/runbooks/blackout.md"), proxy.clock()
+    )
+    assert entry is not None
+    assert proxy.cache.read_body(entry) == b"# what to do"
+    assert entry.header("Content-Type") == "text/markdown"
+    assert entry.pinned is True
+    assert entry.volatility is Volatility.STATIC
+
+    # Nothing changed on disk, so a second run stores nothing and says so.
+    [again] = await warm_all(proxy, ["handbook"])
+    assert (again.fetched, again.already_fresh) == (0, 3)
+
+    # A changed file is stored again.
+    (root / "index.html").write_text("<h1>the handbook, revised</h1>", encoding="utf-8")
+    [revised] = await warm_all(proxy, ["handbook"])
+    await proxy.aclose()
+    assert (revised.fetched, revised.already_fresh) == (1, 2)
+
+
+async def test_a_directory_corpus_stays_inside_the_directory(tmp_path: Path) -> None:
+    root = tmp_path / "handbook"
+    root.mkdir()
+    (root / "inside.txt").write_text("in", encoding="utf-8")
+    outside = tmp_path / "secrets.txt"
+    outside.write_text("out", encoding="utf-8")
+    (root / "escape.txt").symlink_to(outside)
+
+    loaded = parse_config(
+        DIRECTORY.format(data=tmp_path / "data", path=root), tmp_path / "leeward.yaml"
+    )
+    proxy = Proxy(loaded)
+    [result] = await warm_all(proxy, ["handbook"])
+    escaped = proxy.cache.get(cache_key("GET", "https://docs.example.test/docs/escape.txt"), 0.0)
+    await proxy.aclose()
+
+    assert result.fetched == 1
+    assert escaped is None

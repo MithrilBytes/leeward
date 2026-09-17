@@ -17,10 +17,12 @@ still fresh is left alone, so running it twice costs one cache lookup per URL.
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 import re
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urljoin, urlsplit
@@ -37,6 +39,7 @@ from leeward.config import (
     ZimCorpus,
 )
 from leeward.events import EventFields, RunRef, WarmInfo
+from leeward.policy import CallTarget, resolve
 from leeward.proxy import HttpRequest, Proxy
 from leeward.vocab import Outcome, Surface
 
@@ -152,6 +155,8 @@ class Warmer:
             return Plan(corpus.name, self._listed(corpus), robots_skipped=True)
         if isinstance(corpus, SitemapCorpus):
             return await self._from_sitemap(corpus, run)
+        if isinstance(corpus, DirectoryCorpus):
+            return Plan(corpus.name, self._files(corpus), robots_skipped=True)
         kind = type(corpus).__name__.removesuffix("Corpus").lower()
         return Plan(corpus.name, (), unsupported=kind)
 
@@ -168,6 +173,29 @@ class Warmer:
                 if line.strip() and not line.startswith("#")
             ]
         return tuple(dict.fromkeys(urls))[:MAX_URLS]
+
+    def _files(self, corpus: DirectoryCorpus) -> tuple[str, ...]:
+        """Local files, as the URLs they stand in for.
+
+        A path that leaves the directory, by symlink or otherwise, is not part of the
+        corpus: an operator named a directory, not the filesystem.
+        """
+        root = Path(corpus.path)
+        if not root.is_absolute() and self.proxy.loaded.source is not None:
+            root = self.proxy.loaded.source.parent / root
+        root = root.resolve()
+        base = corpus.maps_to.rstrip("/")
+        found: list[str] = []
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            if not resolved.is_relative_to(root):
+                continue
+            found.append(f"{base}/{resolved.relative_to(root).as_posix()}")
+            if len(found) >= MAX_URLS:
+                break
+        return tuple(found)
 
     async def _from_sitemap(self, corpus: SitemapCorpus, run: RunRef) -> Plan:
         found: list[str] = []
@@ -248,6 +276,11 @@ class Warmer:
             return result
 
         cap = corpus.max_bytes
+        if isinstance(corpus, DirectoryCorpus):
+            self._store_files(corpus, plan, result, cap)
+            self._record(result, run)
+            return result
+
         gate = asyncio.Semaphore(corpus.concurrency)
         stop = asyncio.Event()
 
@@ -266,6 +299,56 @@ class Warmer:
         await asyncio.gather(*(one(url) for url in plan.urls))
         self._record(result, run)
         return result
+
+    def _store_files(
+        self, corpus: DirectoryCorpus, plan: Plan, result: Result, cap: int | None
+    ) -> None:
+        """Put local files into the cache as though they had been fetched.
+
+        Nothing here touches the network, so there is no pacing and no robots question.
+        A file whose stored copy already matches it byte for byte is left alone, which
+        is what makes this rerunnable against a directory that mostly has not changed.
+        """
+        root = Path(corpus.path)
+        if not root.is_absolute() and self.proxy.loaded.source is not None:
+            root = self.proxy.loaded.source.parent / root
+        root = root.resolve()
+        base = corpus.maps_to.rstrip("/")
+        now = self.proxy.clock()
+        for url in plan.urls:
+            path = root / url.removeprefix(f"{base}/")
+            try:
+                body = path.read_bytes()
+            except OSError as error:
+                result.failed += 1
+                result.failures.append((url, f"{type(error).__name__}: {error}"))
+                continue
+            key = cache_key("GET", url)
+            stored = self.proxy.cache.get(key, now)
+            if stored is not None and stored.body_sha256 == sha256(body).hexdigest():
+                result.already_fresh += 1
+                continue
+            policy = resolve(self.proxy.config, CallTarget.parse(url))
+            kind, _encoding = mimetypes.guess_type(path.name)
+            self.proxy.cache.put(
+                key=key,
+                url=url,
+                method="GET",
+                endpoint=policy.endpoint,
+                status=200,
+                headers=(("Content-Type", kind or "application/octet-stream"),),
+                body=body,
+                requested_at=now,
+                received_at=now,
+                volatility=policy.volatility,
+                now=now,
+                pinned=True,
+            )
+            result.fetched += 1
+            result.bytes += len(body)
+            if cap is not None and result.bytes >= cap:
+                result.stopped_at_cap = True
+                return
 
     async def _fetch_one(self, url: str, run: RunRef, result: Result) -> None:
         key = cache_key("GET", url)
@@ -325,7 +408,7 @@ async def warm_all(
 
 def unsupported_kinds(corpora: Iterable[Corpus]) -> list[str]:
     """Corpus types configured but not implemented, so a caller can say so up front."""
-    kinds = {DirectoryCorpus: "directory", ZimCorpus: "zim", McpResourcesCorpus: "mcp_resources"}
+    kinds = {ZimCorpus: "zim", McpResourcesCorpus: "mcp_resources"}
     return sorted(
         {name for corpus in corpora for kind, name in kinds.items() if isinstance(corpus, kind)}
     )
