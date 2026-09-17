@@ -30,7 +30,13 @@ from leeward.config import parse_config
 from leeward.events import read_events
 from leeward.proxy import Proxy
 from leeward.serve import build_app
-from leeward.surfaces.mcp import OUTCOME_META_KEY, ServerFront, Upstream, describe
+from leeward.surfaces.mcp import (
+    OUTCOME_META_KEY,
+    RUN_META_KEY,
+    ServerFront,
+    Upstream,
+    describe,
+)
 from leeward.vocab import BreakerState
 from tests.support import REPO_ROOT, assert_valid
 
@@ -428,3 +434,39 @@ async def test_a_missing_thing_is_remembered_per_call_not_per_tool(tmp_path: Pat
     assert leeward_field(first)["failure"]["class"] == "NOT_FOUND"
     assert leeward_field(second)["failure"]["class"] == "NOT_FOUND"
     assert not working.is_error
+
+
+async def test_a_caller_can_name_its_run_when_the_protocol_carries_no_session(
+    front: tuple[ServerFront, Proxy, Journal], upstream: tuple[MCPServer, Journal], tmp_path: Path
+) -> None:
+    """Stateless clients get one run per connection unless they say otherwise."""
+    fronted, proxy, journal = front
+    server, _other = upstream
+    async with Client(fronted) as client:
+        await client.list_tools()
+        await client.call_tool(
+            "threat_intel_lookup", {"ioc": "198.51.100.4"}, meta={RUN_META_KEY: "first-run"}
+        )
+        vanish(server)
+        # The tool is gone, and that is permanent for the run that found out.
+        gone = await client.call_tool(
+            "threat_intel_lookup", {"ioc": "203.0.113.9"}, meta={RUN_META_KEY: "first-run"}
+        )
+        refused = await client.call_tool(
+            "threat_intel_lookup", {"ioc": "192.0.2.7"}, meta={RUN_META_KEY: "first-run"}
+        )
+    proxy.events.close()
+
+    assert leeward_field(gone)["failure"]["class"] == "TOOL_GONE"
+    assert leeward_field(refused)["failure"]["underlying_class"] == "TOOL_GONE"
+    assert journal.hits("threat_intel_lookup") == 1
+
+    runs = {
+        str(cast("dict[str, Any]", event["run"])["id"]): str(
+            cast("dict[str, Any]", event["run"])["resolved_by"]
+        )
+        for event in read_events(tmp_path / "data" / "events")
+        if event["event"] == "call"
+    }
+    assert set(runs.values()) == {"mcp_meta"}
+    assert len(runs) == 1

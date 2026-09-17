@@ -17,7 +17,8 @@ upstream server and its answers come back unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import contextlib
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -58,6 +59,15 @@ from leeward.surfaces.upstream import ToolCaller, Upstream
 from leeward.surfaces.upstream import describe as describe
 from leeward.transport import Call
 from leeward.vocab import Outcome, Surface
+
+RUN_META_KEY = "io.github.mithrilbytes.leeward/run"
+"""Where a caller may name its run, since a stateless request carries no session.
+
+https://modelcontextprotocol.io/specification/2026-07-28/basic/index#_meta
+"""
+
+RUN_HEADER = "x-leeward-run"
+"""The same thing over a transport that has headers. Matched case-insensitively."""
 
 OUTCOME_META_KEY = "io.github.mithrilbytes.leeward/outcome"
 """Where every tool result carries leeward's outcome.
@@ -147,6 +157,18 @@ def stored_result(body: bytes) -> CallToolResult:
     return CallToolResult.model_validate_json(body)
 
 
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    """A mapping the transport handed us, read case-insensitively, or nothing."""
+    if not isinstance(value, Mapping):
+        return {}
+    items = cast("Mapping[str, object]", value)
+    return {str(key).lower(): item for key, item in items.items()}
+
+
 class ServerFront(MCPServer):
     """leeward's view of one upstream server: the same tools, different failures."""
 
@@ -154,6 +176,7 @@ class ServerFront(MCPServer):
         super().__init__(name=f"leeward-{upstream.name}")
         self.proxy = proxy
         self.upstream = upstream
+        self._notified = False
         self.connection = connection or f"mcp:{upstream.name}"
 
     # Prompts and resources go through the SDK's request handlers rather than the
@@ -310,6 +333,7 @@ class ServerFront(MCPServer):
             proxy.record(outcome, report, Surface.MCP, run, ledger, cache=CacheInfo(hit=False))
             return with_outcome(result, outcome)
 
+        await self._tell_client_to_relist(context)
         failed = decide(entry, allowance, Situation.ORIGIN_FAILED, after, accept_stale=accept_stale)
         if isinstance(failed, ServeStale):
             return self._from_cache(name, failed, policy, ledger, run, report=report)
@@ -377,12 +401,38 @@ class ServerFront(MCPServer):
         return with_outcome(stored, outcome, structured_room=room)
 
     def _run_of(self, context: object) -> RunRef:
-        """Run identity from the session when the transport gives one, else the connection."""
-        session = getattr(context, "session_id", None)
+        """Run identity from the strongest thing the caller gave us.
+
+        The 2026-07-28 revision is stateless: no handshake, no `Mcp-Session-Id`. So a
+        caller that wants its own run, rather than sharing one with everything else on
+        this connection, says so, either in the request's `_meta` or in a header where
+        the transport has headers. A session id is still honoured for older clients,
+        and the connection remains the fallback.
+        """
+        inner = getattr(context, "request_context", None)
+        session = getattr(context, "session_id", None) or getattr(inner, "session_id", None)
         return resolve_run(
+            header=_text(_mapping(getattr(context, "headers", None)).get(RUN_HEADER)),
+            mcp_meta=_text(_mapping(getattr(inner, "meta", None)).get(RUN_META_KEY)),
             mcp_session=session if isinstance(session, str) else None,
             connection=self.connection,
         )
+
+    async def _tell_client_to_relist(self, context: object) -> None:
+        """Ask the client for a fresh listing, once, when ours stopped matching.
+
+        The client is holding the schemas leeward just found to be out of date, and
+        only the client can act on that. Best effort: a transport that cannot carry
+        the notification is not a reason to fail the call.
+        """
+        if self._notified or not (self.upstream.changed or self.upstream.gone):
+            return
+        self._notified = True
+        notify = getattr(context, "notify_tools_changed", None)
+        if notify is None:
+            return
+        with contextlib.suppress(Exception):
+            await cast("Callable[[], Awaitable[None]]", notify)()
 
 
 def upstreams_from(proxy: Proxy) -> dict[str, Upstream]:
