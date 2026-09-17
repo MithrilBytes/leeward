@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from leeward.cli import app
 from leeward.report import headline, percentile, summarize
+from tests.conftest import EgressLog
 
 runner = CliRunner()
 
@@ -214,4 +215,39 @@ def test_chaos_refuses_to_arm_anything_in_production(workdir: Path) -> None:
         "profile: production\nchaos:\n  enabled: true\n", encoding="utf-8"
     )
     refused = runner.invoke(app, ["chaos", "arm", "*", "--fail", "dns_failure"])
+    assert refused.exit_code == 2
+
+
+def test_status_and_forecast_answer_from_local_state_without_a_network(
+    workdir: Path, egress_guard: EgressLog
+) -> None:
+    assert runner.invoke(app, ["init"]).exit_code == 0
+
+    empty = runner.invoke(app, ["status"])
+    assert empty.exit_code == 0, empty.output
+    assert "0 entries" in empty.output
+    assert "nothing has been called yet" in empty.output
+
+    known = json.loads(runner.invoke(app, ["status", "--json"]).output)
+    assert known["cache"]["entries"] == 0
+    assert known["breakers"] == []
+
+    # Nothing is stored and nothing is known to be failing, so the honest prediction is
+    # that the call would go out and work.
+    predicted = runner.invoke(app, ["forecast", "https://en.wikipedia.org/wiki/Foo"])
+    assert predicted.exit_code == 0, predicted.output
+    assert predicted.output.splitlines()[0] == "FRESH  PROCEED"
+    assert predicted.output.splitlines()[1]
+
+    parsed = json.loads(
+        runner.invoke(app, ["forecast", "--json", "https://en.wikipedia.org/wiki/Foo"]).output
+    )
+    assert parsed["volatility"] == "static"
+    assert parsed["predicted"] in ("DOWN", "STALE", "FRESH")
+    assert not egress_guard.attempts
+
+
+def test_forecast_refuses_a_target_it_cannot_parse(workdir: Path) -> None:
+    assert runner.invoke(app, ["init"]).exit_code == 0
+    refused = runner.invoke(app, ["forecast", "not a url"])
     assert refused.exit_code == 2
