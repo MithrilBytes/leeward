@@ -196,6 +196,7 @@ Deterministically, and it will show its work. There is no model in the data path
 - **Classification.** Nineteen failure classes, each derived from evidence rather than from a string match on the exception: DNS response codes, refused connections, TLS validation with a clock check, deadlines, HTTP status with rate limit headers, JSON-RPC codes, tool listings. `leeward classify <url|server/tool>` prints the policy and the rule that decided each part, without touching the network.
 - **Disposition.** Every failure is `TRANSIENT`, `WAIT`, `NEVER` or `UNKNOWN`, with a scope: this request, this endpoint, this host, this run. A `NEVER` is remembered at its scope, so one refusal answers the rest of the run.
 - **Attempts.** Exponential backoff with decorrelated jitter, a hedge at the soft deadline for calls that are safe to duplicate, and a per run budget on retries that cannot be exceeded.
+- **Size.** The store keeps to `cache.max_bytes`, two gigabytes by default, dropping least recently used first and pinned entries only when nothing else is left, which it says out loud in the log.
 - **Cache.** The subset of RFC 9111 that matters here, plus `stale-if-error` and `stale-while-revalidate` from RFC 5861, with per class limits on how old a copy may be. Bodies are content addressed and checked against their hash on read. Identical requests in flight collapse into one.
 - **Breakers.** Per endpoint and per host, opened immediately by a `NEVER`, with half open backoff. A short circuit reports the original failure class, not a generic one.
 

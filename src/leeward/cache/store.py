@@ -55,6 +55,10 @@ CREATE INDEX IF NOT EXISTS entries_endpoint ON entries (endpoint);
 T = TypeVar("T")
 
 
+CHECK_EVERY_BYTES = 8 * 1024 * 1024
+"""Bytes written between one look at the store's total size and the next."""
+
+
 def cache_key(method: str, url: str, vary: Sequence[tuple[str, str]] = ()) -> str:
     """The key for one request: its method, its URL, and the headers the rule varies on."""
     material = {
@@ -129,8 +133,19 @@ class SingleFlight(Generic[T]):
 class CacheStore:
     """Stored responses on local disk. Single process, single thread, no server."""
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        max_bytes: int | None = None,
+        on_evict: Callable[[Sequence[Evicted]], None] | None = None,
+        check_every_bytes: int = CHECK_EVERY_BYTES,
+    ) -> None:
         self.directory = directory
+        self.max_bytes = max_bytes
+        self.on_evict = on_evict
+        self.check_every_bytes = check_every_bytes
+        self._since_check = 0
         self.bodies = directory / "bodies"
         self.bodies.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(directory / "index.db", isolation_level=None)
@@ -257,7 +272,25 @@ class CacheStore:
                 stored_at,
             ),
         )
+        self._maybe_evict(len(body))
         return entry
+
+    def _maybe_evict(self, written: int) -> None:
+        """Keep the store inside its cap, without counting the whole store every write.
+
+        Eviction reads the total, which is a scan, so it is not worth doing after every
+        small body. Bytes written since the last look are counted instead, and the real
+        total is consulted once enough has accumulated to be worth the query.
+        """
+        if self.max_bytes is None:
+            return
+        self._since_check += written
+        if self._since_check < self.check_every_bytes:
+            return
+        self._since_check = 0
+        evicted = self.evict(self.max_bytes)
+        if evicted and self.on_evict is not None:
+            self.on_evict(evicted)
 
     def refresh(
         self,

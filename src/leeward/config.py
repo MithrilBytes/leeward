@@ -311,6 +311,12 @@ Corpus = Annotated[
 ]
 
 
+class CacheSettings(Strict):
+    max_bytes: Size = 2_000_000_000
+    """How much disk the stored copies may take. Least recently used goes first, and a
+    pinned entry is evicted only when nothing else is left, which is warned about."""
+
+
 class ChaosSettings(Strict):
     enabled: bool = False
 
@@ -335,6 +341,7 @@ class Config(Strict):
     rules: list[Rule] = []
     classes: list[ClassMapping] = []
     corpora: list[Corpus] = []
+    cache: CacheSettings = CacheSettings()
     chaos: ChaosSettings = ChaosSettings()
     redaction: Redaction = Redaction()
     warm: WarmSettings = WarmSettings()
