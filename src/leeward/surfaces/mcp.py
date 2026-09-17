@@ -7,8 +7,9 @@ looks like. A tool that has vanished from its server comes back as one refusal t
 says it is permanent for this run, instead of three retries and an error string.
 
 A result that came from the cache, or a failure, carries a note block ahead of the
-content, and every result carries the outcome in `_meta`, so the model reading the
-text and the program reading the metadata are told the same thing.
+content. Every result carries the outcome in `_meta`, and a stale or failed one also
+in `structuredContent.leeward` wherever the tool's output schema leaves room, so the
+model reading the text and the program reading the structure are told the same thing.
 
 Only `tools/call` is treated this way. Prompts and resources are passed to the
 upstream server and its answers come back unchanged.
@@ -16,6 +17,7 @@ upstream server and its answers come back unchanged.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -58,14 +60,19 @@ from leeward.transport import Call
 from leeward.vocab import Outcome, Surface
 
 OUTCOME_META_KEY = "io.github.mithrilbytes.leeward/outcome"
-"""Where a tool result carries leeward's outcome.
+"""Where every tool result carries leeward's outcome.
 
-In `_meta`, not `structuredContent`: a tool that declares an output schema has to
-return structured content that matches it, and an SDK client refuses a result with a
-key the schema does not allow. The key has a reverse DNS vendor prefix, as the
-protocol asks of anyone adding to `_meta`.
+`_meta` is always safe to add to. `structuredContent.leeward` carries the outcome as
+well where a client will accept it, which `with_outcome` decides. The key has a reverse
+DNS vendor prefix, as the protocol asks of anyone adding to `_meta`.
 https://modelcontextprotocol.io/specification/2026-07-28/basic/index#_meta
 """
+
+SCHEMA_KEYWORDS_LEFT_ALONE = frozenset(
+    {"$ref", "$dynamicRef", "allOf", "anyOf", "oneOf", "not", "if", "then", "else"}
+    | {"dependentSchemas", "patternProperties", "propertyNames"}
+)
+"""Output schemas too involved to be sure an extra key still matches them."""
 
 ACCEPT_STALE_ARGUMENT = "accept_stale"
 ACCEPT_STALE_SCHEMA: dict[str, object] = {
@@ -82,19 +89,58 @@ def note_block(outcome: CallOutcome) -> TextContent:
     return TextContent(type="text", text=outcome.note)
 
 
-def with_outcome(result: CallToolResult | None, outcome: CallOutcome) -> CallToolResult:
+def room_for_outcome(schema: Mapping[str, Any] | None, structured: object) -> bool:
+    """Whether structured content can gain a `leeward` key and still match the tool's
+    declared output schema, which clients check a result that is not an error against.
+
+    With no schema there is nothing to match. With one, only a plain object schema that
+    does not close itself to extra keys, or define `leeward`, is known to accept it.
+    https://modelcontextprotocol.io/specification/2026-07-28/server/tools#output-schema
+    """
+    if schema is None:
+        return structured is None or isinstance(structured, dict)
+    if not isinstance(structured, dict) or schema.get("type") != "object":
+        return False
+    if SCHEMA_KEYWORDS_LEFT_ALONE & schema.keys():
+        return False
+    if any(
+        schema.get(key, True) is not True
+        for key in ("additionalProperties", "unevaluatedProperties")
+    ):
+        return False
+    return "leeward" not in cast("Mapping[str, Any]", schema.get("properties") or {})
+
+
+def with_outcome(
+    result: CallToolResult | None, outcome: CallOutcome, *, structured_room: bool = False
+) -> CallToolResult:
     """The upstream result, unchanged, with leeward's note ahead of its content and its
-    outcome in `_meta`. A failure with no result to carry is leeward's own, marked as an
-    error."""
+    outcome in `_meta`.
+
+    A failure has no result to carry, so leeward's own is marked as an error and holds the
+    outcome in `structuredContent.leeward`, which clients do not check against an output
+    schema. A stale result holds it there too when `structured_room` says the schema has
+    room. A fresh result's structured content is never touched.
+    """
     failed = outcome.outcome is Outcome.DOWN or bool(result is not None and result.is_error)
+    decision = outcome.as_dict()
     meta = {**(result.meta or {})} if result is not None else {}
-    meta[OUTCOME_META_KEY] = outcome.as_dict()
+    meta[OUTCOME_META_KEY] = decision
     content = list(result.content) if result is not None else []
     if outcome.note:
         content.insert(0, note_block(outcome))
     if result is None:
-        return CallToolResult(content=content, is_error=failed, _meta=meta)  # pyright: ignore[reportArgumentType]
-    return result.model_copy(update={"content": content, "meta": meta, "is_error": failed})
+        return CallToolResult(
+            content=content,  # pyright: ignore[reportArgumentType]
+            structured_content={"leeward": decision},
+            is_error=failed,
+            _meta=meta,  # pyright: ignore[reportCallIssue]
+        )
+    update: dict[str, object] = {"content": content, "meta": meta, "is_error": failed}
+    if structured_room and outcome.outcome is Outcome.STALE:
+        structured = cast("dict[str, Any]", result.structured_content or {})
+        update["structured_content"] = {**structured, "leeward": decision}
+    return result.model_copy(update=update)
 
 
 def stored_result(body: bytes) -> CallToolResult:
@@ -221,7 +267,7 @@ class ServerFront(MCPServer):
 
         decision = decide(entry, allowance, Situation.START, now, accept_stale=accept_stale)
         if isinstance(decision, ServeFresh | ServeStale):
-            return self._from_cache(decision, policy, ledger, run)
+            return self._from_cache(name, decision, policy, ledger, run)
 
         report = await proxy.engine.call(
             Call("TOOL", f"mcp://{self.upstream.name}/{name}"),
@@ -253,7 +299,7 @@ class ServerFront(MCPServer):
 
         failed = decide(entry, allowance, Situation.ORIGIN_FAILED, after, accept_stale=accept_stale)
         if isinstance(failed, ServeStale):
-            return self._from_cache(failed, policy, ledger, run, report=report)
+            return self._from_cache(name, failed, policy, ledger, run, report=report)
         withheld = failed if isinstance(failed, Withhold) else None
         outcome = build(
             Outcome.DOWN,
@@ -279,6 +325,7 @@ class ServerFront(MCPServer):
 
     def _from_cache(
         self,
+        tool: str,
         decision: ServeFresh | ServeStale,
         policy: ResolvedPolicy,
         ledger: RunLedger,
@@ -310,7 +357,10 @@ class ServerFront(MCPServer):
             ledger,
             cache=CacheInfo(hit=True, age_s=int(decision.age_s), bytes_served=len(body)),
         )
-        return with_outcome(stored_result(body), outcome)
+        stored = stored_result(body)
+        schemas = self.upstream.output_schemas
+        room = tool in schemas and room_for_outcome(schemas[tool], stored.structured_content)
+        return with_outcome(stored, outcome, structured_room=room)
 
     def _run_of(self, context: object) -> RunRef:
         """Run identity from the session when the transport gives one, else the connection."""

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/MithrilBytes/leeward/main/schemas/outcome.schema.json",
   "title": "leeward Outcome",
-  "description": "Attached to every call. In MCP mode it is the tool result's _meta entry io.github.mithrilbytes.leeward/outcome; in HTTP mode it is the DOWN response body and is summarized into X-Leeward-* headers; in LLM mode its note becomes the error message. The note is leeward's own text, never origin content.",
+  "description": "Attached to every call. In MCP mode it is the tool result's _meta entry io.github.mithrilbytes.leeward/outcome, and structuredContent.leeward on a stale or failed result wherever the tool's output schema leaves room; in HTTP mode it is the DOWN response body and is summarized into X-Leeward-* headers; in LLM mode its note becomes the error message. The note is leeward's own text, never origin content.",
   "type": "object",
   "additionalProperties": false,
   "required": [

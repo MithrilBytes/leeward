@@ -186,6 +186,7 @@ async def test_a_cached_tool_answers_with_its_last_result_after_the_server_dies(
     assert_valid("outcome", outcome)
     assert outcome["outcome"] == "STALE"
     assert outcome["failure"]["class"] == "TOOL_GONE"
+    assert cast("dict[str, Any]", stale.structured_content)["leeward"] == outcome
     assert origin_content(stale) == origin_content(fresh) == ["3 incident notes mention blackout"]
     note = describe(stale).splitlines()[0]
     assert note.startswith("[leeward] STALE: served a copy stored")

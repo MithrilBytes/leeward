@@ -65,6 +65,8 @@ class Upstream:
         self.known_tools: set[str] = set()
         self.seen_tools: set[str] = set()
         self.gone: set[str] = set()
+        self.output_schemas: dict[str, dict[str, Any] | None] = {}
+        """Each listed tool's declared output schema, or None where it declares none."""
         self._environment = environment if environment is not None else os.environ
         self._server = server
         self._client: Client | None = None
@@ -140,6 +142,8 @@ class Upstream:
         complete = cursor is None
         self.gone = self.known_tools - names if complete else set()
         self.known_tools = names if complete else self.known_tools | names
+        schemas = {tool.name: tool.output_schema for tool in listed}
+        self.output_schemas = schemas if complete else {**self.output_schemas, **schemas}
         self.seen_tools |= names
         return listed
 

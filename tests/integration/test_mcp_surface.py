@@ -104,6 +104,7 @@ async def test_a_tool_result_comes_back_with_the_outcome_beside_it(
     assert outcome["endpoint"] == "notes/incident_notes"
     assert outcome["note"] == ""
     assert_valid("outcome", outcome)
+    assert "leeward" not in cast("dict[str, Any]", result.structured_content or {})
     assert journal.hits("incident_notes") == 1
 
 
@@ -132,6 +133,7 @@ async def test_a_vanished_tool_is_refused_once_and_says_it_is_permanent(
     assert gone.is_error
     outcome = leeward_field(gone)
     assert outcome["failure"]["class"] == "TOOL_GONE"
+    assert cast("dict[str, Any]", gone.structured_content) == {"leeward": outcome}
     assert outcome["failure"]["attempts"] == 1
     assert outcome["advice"] == "DO_NOT_RETRY"
     assert "is gone from its MCP server" in describe(gone)
@@ -264,6 +266,9 @@ async def test_a_tool_that_starts_failing_falls_back_to_its_last_answer(
     assert text.startswith("[leeward] STALE: served a copy stored")
     assert "3 incident notes mention blackout" in text
     assert_valid("outcome", outcome)
+    structured = dict(cast("dict[str, Any]", second.structured_content))
+    assert structured.pop("leeward") == outcome
+    assert structured == first.structured_content
 
 
 async def test_every_tool_call_is_recorded(
