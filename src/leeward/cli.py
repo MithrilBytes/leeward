@@ -557,6 +557,74 @@ def _through_leeward(entry: object) -> bool:
 
 
 @app.command()
+def status(config_path: ConfigOption = None, json_output: JsonOption = False) -> None:
+    """What leeward knows about itself: breakers, cache, runs, and what is degraded."""
+    from leeward.api import status as report
+    from leeward.proxy import Proxy
+
+    loaded = _load(config_path)
+    proxy = Proxy(loaded)
+    try:
+        known = report(proxy)
+    finally:
+        asyncio.run(proxy.aclose())
+    if json_output:
+        _print_json(known)
+        return
+    cache = cast("Mapping[str, object]", known["cache"])
+    _out.print(
+        f"{cache['entries']} entries, {human_bytes(cast('int', cache['bytes']))}, "
+        f"{cache['pinned']} pinned",
+        markup=False,
+    )
+    breakers = cast("list[Mapping[str, object]]", known["breakers"])
+    for breaker in breakers:
+        wait = breaker["next_probe_in_s"]
+        when = f", next probe in {human_duration(cast('float', wait))}" if wait else ""
+        _out.print(
+            f"{breaker['scope']} {breaker['key']}: {breaker['state']}"
+            f" ({breaker['opened_by_class']}){when}",
+            markup=False,
+        )
+    endpoints = cast("list[Mapping[str, object]]", known["endpoints"])
+    for endpoint in endpoints:
+        _out.print(f"{endpoint['endpoint']}: {endpoint['last_outcome']}", markup=False)
+    if not breakers and not endpoints:
+        _out.print("nothing has been called yet", markup=False)
+
+
+@app.command()
+def forecast(
+    target: Annotated[str, typer.Argument(help="A URL, or server/tool for an MCP call.")],
+    config_path: ConfigOption = None,
+    json_output: JsonOption = False,
+) -> None:
+    """Say what the next call would return, without making it."""
+    from leeward.api import forecast as predict
+    from leeward.proxy import Proxy
+
+    loaded = _load(config_path)
+    try:
+        asked = CallTarget.parse(target)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    proxy = Proxy(loaded)
+    try:
+        predicted = predict(proxy, asked)
+    finally:
+        asyncio.run(proxy.aclose())
+    if json_output:
+        _print_json(predicted.as_dict())
+        return
+    _out.print(f"{predicted.predicted}  {predicted.advice}", markup=False)
+    _out.print(predicted.reason, markup=False)
+    if predicted.age_s is not None:
+        _out.print(f"a stored copy is {human_duration(predicted.age_s)} old", markup=False)
+    if predicted.injected:
+        _out.print("a fault is armed for this endpoint", markup=False)
+
+
+@app.command()
 def warm(
     corpora: Annotated[
         list[str] | None, typer.Argument(help="Corpora to warm. Omit for all of them.")
