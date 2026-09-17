@@ -271,10 +271,20 @@ def serve(config_path: ConfigOption = None, json_output: JsonOption = False) -> 
             ("mcp", surfaces.mcp),
             ("fetch", surfaces.fetch),
             ("llm", surfaces.llm),
+            ("forward", surfaces.forward),
         )
         if surface.enabled
     ]
     warnings = policy_warnings(loaded.config)
+    if surfaces.llm.enabled:
+        if not surfaces.llm.tiers:
+            warnings.append("the model surface is enabled with no tiers, so it refuses calls")
+        warnings += _tier_warnings(loaded)
+    if surfaces.forward.enabled:
+        forward_host, _, forward_port = surfaces.forward.listen.rpartition(":")
+        warnings.append(
+            f"the forward proxy tunnels on {forward_host}:{forward_port} and cannot cache"
+        )
     if not enabled:
         warnings.insert(
             0, "no surface is enabled, so only /leeward/status and /leeward/forecast answer"
@@ -494,6 +504,15 @@ def _finish(checks: list[dict[str, object]], json_output: bool) -> None:
             )
     if failed:
         raise typer.Exit(1)
+
+
+def _tier_warnings(loaded: LoadedConfig) -> list[str]:
+    """Keys an operator named but has not set, read at startup rather than at 3 a.m."""
+    return [
+        f"tier {tier.name}: {tier.api_key_env} is not set in the environment"
+        for tier in loaded.config.surfaces.llm.tiers
+        if tier.api_key_env and not os.environ.get(tier.api_key_env)
+    ]
 
 
 def _newest_event(directory: Path) -> str | None:
