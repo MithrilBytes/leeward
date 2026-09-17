@@ -89,3 +89,36 @@ def test_events_prints_the_log_filtered_by_run(workdir: Path) -> None:
 def test_version_prints_the_package_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert (result.exit_code, result.output.strip()) == (0, __version__)
+
+
+def test_events_without_a_config_file_reads_the_log_wrap_writes(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = EventLog(workdir / ".leeward" / "events", frozenset(DEFAULT_REDACT_HEADERS))
+    log.emit("startup", RunRef("wrapped", RunResolution.CONNECTION), {"message": "from wrap"})
+    log.close()
+    elsewhere = workdir / "some" / "project"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+    result = runner.invoke(app, ["events", "--json"])
+    assert result.exit_code == 0, result.output
+    assert [json.loads(line)["message"] for line in result.output.splitlines()] == ["from wrap"]
+
+
+def test_wrap_needs_the_command_it_wraps(workdir: Path) -> None:
+    result = runner.invoke(app, ["wrap"])
+    assert result.exit_code == 2
+    assert "COMMAND" in result.output
+
+
+def test_wrap_refuses_a_name_that_cannot_name_an_endpoint(workdir: Path) -> None:
+    result = runner.invoke(app, ["wrap", "--name", "two words", "--", "server"])
+    assert result.exit_code == 2
+    assert "--name 'two words'" in result.output
+
+
+def test_serve_refuses_an_invalid_config_before_listening(workdir: Path) -> None:
+    (workdir / "leeward.yaml").write_text("surfaces:\n  fetch:\n    listen: nowhere\n")
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 2
+    assert "is not host:port" in result.output
